@@ -146,12 +146,12 @@ export default function EmployeePage() {
 
             <TabsContent value="workrecord" className="mt-6">
               {/* Current Status Display */}
-              <Card className="mb-8 bg-gradient-to-r from-blue-50 to-indigo-50">
-                <CardContent className="pt-6">
+              <Card className="mb-8 timesheet-gradient text-white">
+                <CardContent className="pt-6 relative z-10">
                   <div className="flex items-center justify-between mb-6">
                     <div>
-                      <h3 className="text-lg font-semibold text-gray-900">Current Status</h3>
-                      <p className="text-gray-600">
+                      <h3 className="text-lg font-semibold neon-text">Current Status</h3>
+                      <p className="text-white/80">
                         {isCurrentlyCheckedIn ? (
                           <>Checked in • Started at {workRecords.find(r => r.status === 'in-progress')?.checkIn}</>
                         ) : (
@@ -160,8 +160,8 @@ export default function EmployeePage() {
                       </p>
                     </div>
                     <div className="text-right">
-                      <div className="text-2xl font-bold text-gray-900">{todaysHours.toFixed(1)} hrs</div>
-                      <div className="text-sm text-gray-600">Today's work</div>
+                      <div className="text-3xl font-bold neon-text">{todaysHours.toFixed(1)} hrs</div>
+                      <div className="text-sm text-white/80">Today's work</div>
                     </div>
                   </div>
                   
@@ -169,7 +169,7 @@ export default function EmployeePage() {
                     <Button
                       onClick={handleCheckIn}
                       disabled={isCurrentlyCheckedIn}
-                      className="bg-green-600 hover:bg-green-700"
+                      className="bg-green-500/20 border border-green-400/50 text-green-100 hover:bg-green-500/30 hover:border-green-400 backdrop-blur-sm transition-all duration-200"
                     >
                       <LogIn className="h-4 w-4 mr-2" />
                       Check In
@@ -177,7 +177,7 @@ export default function EmployeePage() {
                     <Button
                       onClick={handleCheckOut}
                       disabled={!isCurrentlyCheckedIn}
-                      variant="destructive"
+                      className="bg-red-500/20 border border-red-400/50 text-red-100 hover:bg-red-500/30 hover:border-red-400 backdrop-blur-sm transition-all duration-200"
                     >
                       <LogOut className="h-4 w-4 mr-2" />
                       Check Out
@@ -233,39 +233,39 @@ export default function EmployeePage() {
 
             <TabsContent value="salary" className="mt-6">
               {/* Salary Card */}
-              <Card className="mb-8 bg-gradient-to-r from-purple-600 to-blue-600 text-white">
-                <CardContent className="pt-6">
+              <Card className="mb-8 salary-gradient text-white">
+                <CardContent className="pt-6 relative z-10">
                   <div className="flex justify-between items-start mb-6">
                     <div>
-                      <h3 className="text-lg font-semibold opacity-90">Current Period Earnings</h3>
-                      <p className="opacity-75">Available for claim</p>
+                      <h3 className="text-lg font-semibold neon-text">Current Period Earnings</h3>
+                      <p className="text-white/80">Available for claim</p>
                     </div>
                     <div className="text-right">
-                      <div className="text-3xl font-bold">{currentEarnings.amount} ETH</div>
-                      <div className="opacity-75">{currentEarnings.usdValue} USD</div>
+                      <div className="text-4xl font-bold neon-text">{currentEarnings.amount} ETH</div>
+                      <div className="text-white/80 text-lg">{currentEarnings.usdValue} USD</div>
                     </div>
                   </div>
                   
                   <div className="grid grid-cols-3 gap-6 mb-6">
-                    <div>
-                      <div className="text-sm opacity-75">Hours Worked</div>
-                      <div className="text-lg font-semibold">{currentEarnings.hoursWorked.toFixed(1)} hrs</div>
+                    <div className="bg-white/10 backdrop-blur-sm rounded-lg p-4 border border-white/20">
+                      <div className="text-sm text-white/70">Hours Worked</div>
+                      <div className="text-xl font-bold text-white">{currentEarnings.hoursWorked.toFixed(1)} hrs</div>
                     </div>
-                    <div>
-                      <div className="text-sm opacity-75">Hourly Rate</div>
-                      <div className="text-lg font-semibold">{currentEarnings.hourlyRate} ETH</div>
+                    <div className="bg-white/10 backdrop-blur-sm rounded-lg p-4 border border-white/20">
+                      <div className="text-sm text-white/70">Hourly Rate</div>
+                      <div className="text-xl font-bold text-white">{currentEarnings.hourlyRate} ETH</div>
                     </div>
-                    <div>
-                      <div className="text-sm opacity-75">Status</div>
-                      <div className="text-lg font-semibold">Ready to Claim</div>
+                    <div className="bg-white/10 backdrop-blur-sm rounded-lg p-4 border border-white/20">
+                      <div className="text-sm text-white/70">Status</div>
+                      <div className="text-xl font-bold text-green-300">Ready</div>
                     </div>
                   </div>
                   
                   {isClaimingSalary && (
-                    <div className="bg-white/20 rounded-lg p-3 mb-4">
-                      <div className="flex items-center space-x-2 text-white">
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        <span className="text-sm">Processing salary claim on blockchain...</span>
+                    <div className="bg-white/20 backdrop-blur-sm rounded-lg p-4 mb-4 border border-white/30">
+                      <div className="flex items-center space-x-3 text-white">
+                        <Loader2 className="h-5 w-5 animate-spin" />
+                        <span className="text-sm font-medium">Processing salary claim on blockchain...</span>
                       </div>
                     </div>
                   )}
@@ -273,16 +273,16 @@ export default function EmployeePage() {
                   <Button
                     onClick={handleClaimSalary}
                     disabled={claimSalaryMutation.isPending || !currentWalletAddress}
-                    className="w-full bg-white text-purple-700 hover:bg-gray-100"
+                    className="w-full bg-white/20 border border-white/30 text-white hover:bg-white/30 backdrop-blur-sm font-semibold py-3 glow-effect"
                   >
                     {claimSalaryMutation.isPending ? (
                       <>
-                        <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                        <Loader2 className="h-5 w-5 animate-spin mr-2" />
                         Claiming...
                       </>
                     ) : (
                       <>
-                        <Wallet className="h-4 w-4 mr-2" />
+                        <Wallet className="h-5 w-5 mr-2" />
                         Claim Salary
                       </>
                     )}
