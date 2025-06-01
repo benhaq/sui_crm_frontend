@@ -55,7 +55,7 @@ export const SalaryTab: React.FC<SalaryTabProps> = ({
             </div>
             <div className="text-right">
               <div className="text-4xl font-bold neon-text">
-                {currentEarnings.amount} ETH
+                {currentEarnings.amount} SUI
               </div>
               <div className="text-white/80 text-lg">
                 {currentEarnings.usdValue} USD
@@ -73,7 +73,7 @@ export const SalaryTab: React.FC<SalaryTabProps> = ({
             <div className="bg-white/10 backdrop-blur-sm rounded-lg p-4 border border-white/20">
               <div className="text-sm text-white/70">Hourly Rate</div>
               <div className="text-xl font-bold text-white">
-                {currentEarnings.hourlyRate} ETH
+                {currentEarnings.hourlyRate} SUI
               </div>
             </div>
             <div className="bg-white/10 backdrop-blur-sm rounded-lg p-4 border border-white/20">
@@ -145,7 +145,7 @@ export const SalaryTab: React.FC<SalaryTabProps> = ({
                   <div className="flex items-center justify-between">
                     <div>
                       <div className="font-medium text-foreground">
-                        Amount: {record.amount} ETH
+                        Amount: {record.amount} SUI
                       </div>
                       <div className="text-sm text-muted-foreground">
                         Period: {record.period}
