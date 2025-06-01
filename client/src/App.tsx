@@ -14,8 +14,6 @@ import {
   ConnectButton,
   useDisconnectWallet,
 } from "@mysten/dapp-kit";
-import { Buffer } from "buffer";
-window.Buffer = Buffer;
 
 function AppHeader() {
   const { isAdmin } = useAppStore();
