@@ -1,0 +1,29 @@
+{
+  "name": "sui-contract-caller",
+  "version": "1.0.0",
+  "description": "A script to call Sui contracts",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "create-whitelist": "ts-node src/createWhitelist.ts",
+    "checkin": "ts-node src/runEmployeeCheckInFlow.ts",
+    "checkout": "ts-node src/runEmployeeCheckOutFlow.ts",
+    "add-whitelist": "ts-node src/addWhiteList.ts"
+  },
+  "keywords": [
+    "sui",
+    "blockchain"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@mysten/seal": "^0.4.6",
+    "@mysten/sui": "^1.30.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.16",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3"
+  }
+}
