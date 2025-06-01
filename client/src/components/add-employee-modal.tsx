@@ -1,107 +1,142 @@
-import { useState } from 'react';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { useToast } from '@/hooks/use-toast';
-import { useWeb3 } from '@/hooks/use-web3';
-import { apiRequest } from '@/lib/queryClient';
-import { Loader2 } from 'lucide-react';
+import { useState } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { useToast } from "@/hooks/use-toast";
+import { Loader2 } from "lucide-react";
+
+// Sui imports
+import {
+  useCurrentAccount,
+  useSignAndExecuteTransaction,
+} from "@mysten/dapp-kit";
+import { Transaction } from "@mysten/sui/transactions";
+import { useNetworkVariable } from "@/networkConfig"; // For packageId
 
 interface AddEmployeeModalProps {
   isOpen: boolean;
   onClose: () => void;
-  timesheetId: number | null;
+  timesheetId: string | null; // This is the Whitelist object ID
+  capId: string | null; // This is the Cap object ID for the Whitelist
 }
 
 interface AddEmployeeForm {
   employeeAddress: string;
-  employeeName: string;
-  hourlyRate: string;
 }
 
-export function AddEmployeeModal({ isOpen, onClose, timesheetId }: AddEmployeeModalProps) {
+export function AddEmployeeModal({
+  isOpen,
+  onClose,
+  timesheetId, // Whitelist ID
+  capId, // Cap ID
+}: AddEmployeeModalProps) {
   const [form, setForm] = useState<AddEmployeeForm>({
-    employeeAddress: '',
-    employeeName: '',
-    hourlyRate: ''
+    employeeAddress: "",
   });
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  
+  // const [isSubmitting, setIsSubmitting] = useState(false); // Handled by useMutation.isPending
+
   const { toast } = useToast();
-  const { addEmployeeToTimesheet } = useWeb3();
   const queryClient = useQueryClient();
+  const currentAccount = useCurrentAccount();
+  const packageId = useNetworkVariable("packageId");
+  const {
+    mutateAsync: signAndExecuteTransactionMutation,
+    isPending: isSubmitting,
+  } = useSignAndExecuteTransaction();
 
   const addEmployeeMutation = useMutation({
     mutationFn: async (data: AddEmployeeForm) => {
-      if (!timesheetId) throw new Error('No timesheet selected');
-      
-      // Execute Web3 transaction first
-      setIsSubmitting(true);
-      const transaction = await addEmployeeToTimesheet(data.employeeAddress, timesheetId);
-      
-      // Then add to backend
-      const response = await apiRequest('POST', `/api/timesheets/${timesheetId}/employees`, {
-        employeeAddress: data.employeeAddress,
-        employeeName: data.employeeName || null,
-        hourlyRate: data.hourlyRate || null
+      if (!currentAccount || !packageId) {
+        throw new Error("Wallet not connected or packageId not configured.");
+      }
+      if (!timesheetId) {
+        throw new Error("No timesheet (Whitelist ID) selected.");
+      }
+      if (!capId) {
+        throw new Error("No Cap ID provided for the selected timesheet.");
+      }
+      if (!data.employeeAddress.trim()) {
+        throw new Error("Employee address cannot be empty.");
+      }
+
+      const txb = new Transaction();
+      txb.moveCall({
+        target: `${packageId}::whitelist::add`,
+        arguments: [
+          txb.object(timesheetId), // The Whitelist object ID
+          txb.object(capId), // The Cap object ID
+          txb.pure.address(data.employeeAddress.trim()),
+        ],
       });
-      
-      return { employee: await response.json(), transaction };
+
+      return signAndExecuteTransactionMutation({
+        transaction: txb,
+        // options: { showEffects: true }, // Default options might be sufficient
+      });
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['/api/timesheets'] });
-      queryClient.invalidateQueries({ queryKey: [`/api/timesheets/${timesheetId}/employees`] });
+    onSuccess: (result: any) => {
+      // Using any for result type from useSignAndExecuteTransaction
+      console.log("Add employee transaction successful!", result);
+      // Invalidate the query for timesheets to reflect the new employee in the list count
+      queryClient.invalidateQueries({
+        queryKey: [
+          "sui",
+          "whitelists_and_caps",
+          currentAccount?.address,
+          packageId,
+        ],
+      });
       toast({
-        title: "Employee Added",
-        description: "Employee has been successfully added to the timesheet.",
+        title: "Employee Add Transaction Submitted",
+        description: `Transaction to add employee submitted. Digest: ${result.digest.substring(
+          0,
+          10
+        )}...`,
       });
       handleClose();
     },
-    onError: (error) => {
+    onError: (error: Error) => {
       toast({
-        title: "Error",
-        description: error.message || "Failed to add employee to timesheet",
+        title: "Error Adding Employee",
+        description: error.message || "Failed to submit transaction to Sui.",
         variant: "destructive",
       });
     },
-    onSettled: () => {
-      setIsSubmitting(false);
-    }
+    // onSettled: () => { // isPending from hook handles this
+    //   setIsSubmitting(false);
+    // },
   });
 
   const handleClose = () => {
-    setForm({
-      employeeAddress: '',
-      employeeName: '',
-      hourlyRate: ''
-    });
+    setForm({ employeeAddress: "" });
     onClose();
   };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    
-    if (!form.employeeAddress) {
+    if (!form.employeeAddress.trim()) {
       toast({
         title: "Validation Error",
-        description: "Employee wallet address is required",
+        description: "Employee wallet address is required.",
         variant: "destructive",
       });
       return;
     }
-
-    // Basic Ethereum address validation
-    if (!form.employeeAddress.match(/^0x[a-fA-F0-9]{40}$/)) {
+    if (!form.employeeAddress.match(/^0x[a-fA-F0-9]{2,}$/)) {
       toast({
         title: "Validation Error",
-        description: "Please enter a valid Ethereum wallet address",
+        description: "Please enter a valid Sui wallet address (e.g., 0x...)",
         variant: "destructive",
       });
       return;
     }
-
     addEmployeeMutation.mutate(form);
   };
 
@@ -111,52 +146,35 @@ export function AddEmployeeModal({ isOpen, onClose, timesheetId }: AddEmployeeMo
         <DialogHeader>
           <DialogTitle>Add Employee to Timesheet</DialogTitle>
         </DialogHeader>
-        
+
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="space-y-2">
             <Label htmlFor="employeeAddress">Employee Wallet Address *</Label>
             <Input
               id="employeeAddress"
               type="text"
-              placeholder="0x..."
+              placeholder="0x... (Sui Wallet Address)"
               value={form.employeeAddress}
-              onChange={(e) => setForm(prev => ({ ...prev, employeeAddress: e.target.value }))}
+              onChange={(e) =>
+                setForm((prev) => ({
+                  ...prev,
+                  employeeAddress: e.target.value,
+                }))
+              }
               className="font-mono text-sm"
               required
+              disabled={isSubmitting}
             />
             <p className="text-xs text-muted-foreground">
-              Enter the employee's Ethereum wallet address
+              Enter the employee's Sui wallet address to add to this timesheet.
             </p>
           </div>
 
-          <div className="space-y-2">
-            <Label htmlFor="employeeName">Employee Name (Optional)</Label>
-            <Input
-              id="employeeName"
-              type="text"
-              placeholder="John Doe"
-              value={form.employeeName}
-              onChange={(e) => setForm(prev => ({ ...prev, employeeName: e.target.value }))}
-            />
-          </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="hourlyRate">Hourly Rate (ETH)</Label>
-            <Input
-              id="hourlyRate"
-              type="number"
-              step="0.001"
-              placeholder="0.035"
-              value={form.hourlyRate}
-              onChange={(e) => setForm(prev => ({ ...prev, hourlyRate: e.target.value }))}
-            />
-          </div>
-
           {isSubmitting && (
-            <div className="bg-blue-50 border border-blue-200 rounded-md p-3">
-              <div className="flex items-center space-x-2 text-blue-700">
+            <div className="bg-blue-50 border border-blue-200 rounded-md p-3 dark:bg-blue-900/20 dark:border-blue-700/30">
+              <div className="flex items-center space-x-2 text-blue-700 dark:text-blue-300">
                 <Loader2 className="h-4 w-4 animate-spin" />
-                <span className="text-sm">Executing Web3 transaction...</span>
+                <span className="text-sm">Submitting to Sui...</span>
               </div>
             </div>
           )}
@@ -166,26 +184,32 @@ export function AddEmployeeModal({ isOpen, onClose, timesheetId }: AddEmployeeMo
               type="button"
               variant="outline"
               onClick={handleClose}
-              disabled={addEmployeeMutation.isPending}
+              disabled={isSubmitting}
               className="flex-1"
             >
               Cancel
             </Button>
             <Button
               type="submit"
-              disabled={addEmployeeMutation.isPending}
+              disabled={isSubmitting || !packageId || !timesheetId || !capId}
               className="flex-1"
             >
-              {addEmployeeMutation.isPending ? (
+              {isSubmitting ? (
                 <>
                   <Loader2 className="h-4 w-4 animate-spin mr-2" />
                   Adding...
                 </>
               ) : (
-                'Add Employee'
+                "Add Employee to Timesheet"
               )}
             </Button>
           </div>
+          {(!packageId || !timesheetId || !capId) && !isSubmitting && (
+            <p className="text-xs text-destructive text-center pt-2">
+              Error: Missing critical data (Package ID, Timesheet ID, or Cap
+              ID). Cannot proceed.
+            </p>
+          )}
         </form>
       </DialogContent>
     </Dialog>
