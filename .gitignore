@@ -6,3 +6,10 @@ vite.config.ts.*
 *.tar.gz
 yarn.lock
 package-lock.json
+
+build/*
+Move.lock
+
+
+move/scripts/node_modules/*
+move/scripts/package-lock.json
