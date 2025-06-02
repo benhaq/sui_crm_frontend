@@ -5,30 +5,14 @@ import {
   useQueryClient,
   QueryKey,
 } from "@tanstack/react-query";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
-import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AddEmployeeModal } from "@/components/add-employee-modal";
 import { useToast } from "@/hooks/use-toast";
 import { useAppStore } from "@/lib/store";
 import { useLocation } from "wouter";
-import {
-  Loader2,
-  Plus,
-  Clock,
-  Users,
-  Eye,
-  BarChart3,
-  ListChecks,
-  Paperclip,
-  ClipboardPaste,
-  KeyRound,
-} from "lucide-react";
-import type { /*Timesheet,*/ WorkRecord } from "@shared/schema"; // Timesheet from @shared/schema might conflict or not be what we need for Sui display
+import { Clock, Paperclip } from "lucide-react";
+import type { WorkRecord } from "@shared/schema"; // Timesheet from @shared/schema might conflict or not be what we need for Sui display
 
 // Sui imports
 import {
@@ -41,7 +25,6 @@ import { Transaction } from "@mysten/sui/transactions"; // Corrected: Changed fr
 import { useNetworkVariable } from "@/networkConfig"; // Corrected import name
 import type { AppTimesheet } from "@/lib/store"; // Import the AppTimesheet type
 import { set as idbSet, get as idbGet, del as idbDel } from "idb-keyval"; // Using idb-keyval again
-import { fromHex, toHEX } from "@/lib/suiUtils"; // Re-added fromHex, added toHEX for consistency
 import {
   SealClient,
   SessionKey,
@@ -50,7 +33,6 @@ import {
   EncryptedObject,
 } from "@mysten/seal"; // Added Seal imports
 import { SuiGraphQLClient } from "@mysten/sui/graphql"; // Added for SessionKey client
-import { AdminSealSetup } from "@/components/admin/AdminSealSetup"; // Import the new component
 import { CreateTimesheetSuiForm } from "@/components/admin/CreateTimesheetSuiForm"; // Reverted: Import the new form component
 import { ActiveTimesheetsList } from "@/components/admin/ActiveTimesheetsList"; // Import the new list component
 import { PendingAttachments } from "@/components/admin/PendingAttachments"; // Import the new attachments component
@@ -116,14 +98,6 @@ export default function AdminPage() {
     PendingLogMarker[]
   >([]); // Loaded from admin's IDB
 
-  // Admin Seal Client and Session Key state
-  const [sealClientForAdmin, setSealClientForAdmin] =
-    useState<SealClient | null>(null);
-  const [sessionKeyForAdmin, setSessionKeyForAdmin] =
-    useState<SessionKey | null>(null);
-  const [isInitializingSealAdmin, setIsInitializingSealAdmin] = useState(false);
-  const [adminSealError, setAdminSealError] = useState<string | null>(null);
-
   const { currentAdminTab, setCurrentAdminTab, setAvailableTimesheets } =
     useAppStore();
   const { toast } = useToast();
@@ -147,7 +121,6 @@ export default function AdminPage() {
   // Placeholder for KEY_SERVER_OBJECT_IDS_TESTNET and ENCRYPTION_THRESHOLD if not globally defined
   // These should ideally come from a shared config or constants file
   const KEY_SERVER_OBJECT_IDS_TESTNET = getAllowlistedKeyServers("testnet");
-  // const ENCRYPTION_THRESHOLD = 1; // Already defined in employee.tsx, ensure consistency if needed here
 
   const queryFn = async (): Promise<FetchedSuiTimesheet[]> => {
     if (!currentAccount?.address || !packageId) {
@@ -358,11 +331,7 @@ export default function AdminPage() {
   };
 
   const handleViewWorkLog = (timesheetId: string) => {
-    const selected = timesheets.find((ts) => ts.id === timesheetId);
-    if (selected) {
-      setSelectedTimesheetId(timesheetId);
-      setCurrentAdminTab("worklog"); // Switch to worklog tab
-    }
+    setLocation(`/timesheet/${timesheetId}`);
   };
 
   // EmployeeWorkSummary logic remains as it's based on allWorkRecords, which is a separate query for now.
@@ -528,120 +497,6 @@ export default function AdminPage() {
     }
   };
 
-  const initializeAdminSealSession = async () => {
-    if (!currentAccount?.address || !packageId || !suiClient) {
-      setAdminSealError(
-        "Wallet not connected, packageId missing, or Sui client not available."
-      );
-      console.error("AdminSeal: Pre-flight check failed", {
-        currentAccount,
-        packageId,
-        suiClient,
-      });
-      return;
-    }
-    console.log("AdminSeal: Starting initialization...");
-    setIsInitializingSealAdmin(true);
-    setAdminSealError(null);
-    try {
-      console.log("AdminSeal: Initializing Seal Client...");
-      const client = new SealClient({
-        suiClient: suiClient as any, // Cast if direct type compatibility issues
-        serverObjectIds: KEY_SERVER_OBJECT_IDS_TESTNET.map((id) => [id, 1]), // Example threshold 1
-        verifyKeyServers: false, // Set as per your security model
-      });
-      setSealClientForAdmin(client);
-      console.log("AdminSeal: Seal Client initialized.");
-
-      const sessionKeyIdbKey = `seal-session-key-admin-${currentAccount.address}-${packageId}`;
-      const storedSessionData = await idbGet(sessionKeyIdbKey);
-
-      let sk: SessionKey | undefined;
-
-      if (
-        storedSessionData &&
-        storedSessionData.exportedKey &&
-        storedSessionData.signature
-      ) {
-        console.log(
-          "AdminSeal: Found existing session key in IndexedDB, importing..."
-        );
-        const importedSk = await SessionKey.import(
-          storedSessionData.exportedKey,
-          new SuiGraphQLClient({
-            url: "https://sui-testnet.mystenlabs.com/graphql",
-          }) as any
-        );
-        if (!importedSk.isExpired()) {
-          importedSk.setPersonalMessageSignature(storedSessionData.signature);
-          sk = importedSk;
-          console.log(
-            "AdminSeal: SessionKey imported and signature re-applied successfully."
-          );
-        } else {
-          console.log(
-            "AdminSeal: Stored session key expired, creating new one."
-          );
-          await idbDel(sessionKeyIdbKey);
-        }
-      }
-
-      if (!sk) {
-        console.log("AdminSeal: Creating new SessionKey...");
-        sk = new SessionKey({
-          address: currentAccount.address,
-          packageId: packageId,
-          ttlMin: 30, // Admin session key can last longer, e.g., 24 hours
-          client: new SuiGraphQLClient({
-            url: "https://sui-testnet.mystenlabs.com/graphql",
-          }) as any,
-        });
-        const personalMessage = sk.getPersonalMessage();
-        toast({
-          title: "Admin Seal Setup",
-          description:
-            "Please sign the message in your wallet to activate Seal session key.",
-          duration: 7000,
-        });
-        console.log(
-          "AdminSeal: Signing personal message for SessionKey...",
-          toHEX(personalMessage)
-        );
-
-        // User interaction point:
-        const { signature: signedPersonalMessage } =
-          await signPersonalMessageAsync({ message: personalMessage });
-        console.log("AdminSeal: Personal message signed successfully.");
-
-        sk.setPersonalMessageSignature(signedPersonalMessage);
-        console.log("AdminSeal: New SessionKey initialized and signed.");
-        await idbSet(sessionKeyIdbKey, {
-          exportedKey: sk.export(),
-          signature: signedPersonalMessage,
-        });
-        console.log("AdminSeal: New SessionKey and signature stored.");
-      }
-      setSessionKeyForAdmin(sk);
-      toast({
-        title: "Admin Seal Ready",
-        description: "Seal client and session key initialized for admin.",
-        variant: "default",
-      });
-      console.log("AdminSeal: Initialization complete.");
-    } catch (error: any) {
-      console.error("AdminSeal: Error initializing Seal session:", error);
-      setAdminSealError(error.message || "Failed to initialize Seal session.");
-      toast({
-        title: "Admin Seal Error",
-        description: error.message || "Failed to initialize Seal.",
-        variant: "destructive",
-      });
-    } finally {
-      setIsInitializingSealAdmin(false);
-      console.log("AdminSeal: setIsInitializingSealAdmin set to false.");
-    }
-  };
-
   const attachLogMarkerMutation = useMutation({
     mutationFn: async (marker: PendingLogMarker) => {
       if (!currentAccount || !packageId)
@@ -737,287 +592,6 @@ export default function AdminPage() {
     },
   });
 
-  const [selectedTimesheetForWorklogView, setSelectedTimesheetForWorklogView] =
-    useState<FetchedSuiTimesheet | null>(null);
-  const [onChainBlobIds, setOnChainBlobIds] = useState<string[]>([]);
-  const [isLoadingWorkLogMarkers, setIsLoadingWorkLogMarkers] = useState(false);
-  const [decryptionResults, setDecryptionResults] = useState<
-    Record<
-      string,
-      {
-        url?: string;
-        error?: string;
-        data?: any;
-        type?: string;
-        rawDecrypted?: Uint8Array;
-      }
-    >
-  >({});
-  const [isDecrypting, setIsDecrypting] = useState<string | null>(null); // blobId of item being decrypted
-
-  const ENCRYPTION_THRESHOLD_FOR_DECRYPT = 1; // Matching employee.tsx threshold
-
-  // Effect to fetch work log markers (blobIds) when a timesheet is selected for view
-  useEffect(() => {
-    const fetchWorkLogBlobIds = async () => {
-      if (!selectedTimesheetForWorklogView || !suiClient) {
-        setOnChainBlobIds([]);
-        return;
-      }
-      setIsLoadingWorkLogMarkers(true);
-      setOnChainBlobIds([]); // Clear previous blobIds
-      setDecryptionResults({}); // Clear previous decryption results
-      console.log(
-        `Fetching dynamic field names (blobIds) for timesheet: ${selectedTimesheetForWorklogView.id}`
-      );
-      try {
-        const dynamicFieldsResponse = await suiClient.getDynamicFields({
-          parentId: selectedTimesheetForWorklogView.id,
-        });
-
-        // As per example: dynamic field names are the blobIds
-        const fetchedBlobIds = dynamicFieldsResponse.data
-          .map((df) => {
-            if (
-              df.name?.type === "0x1::string::String" &&
-              typeof df.name?.value === "string"
-            ) {
-              return df.name.value;
-            }
-            console.warn(
-              "Skipping dynamic field with unexpected name structure:",
-              df.name
-            );
-            return null;
-          })
-          .filter((value): value is string => value !== null);
-
-        setOnChainBlobIds(fetchedBlobIds);
-        if (fetchedBlobIds.length === 0) {
-          toast({
-            title: "No Log Markers",
-            description:
-              "No work log markers (blobIds) found attached to this timesheet on-chain.",
-          });
-        }
-      } catch (error) {
-        console.error("Error fetching work log blobIds:", error);
-        toast({
-          title: "Error Fetching Logs",
-          description: "Could not load work log blobIds for the timesheet.",
-          variant: "destructive",
-        });
-      } finally {
-        setIsLoadingWorkLogMarkers(false);
-      }
-    };
-
-    if (selectedTimesheetForWorklogView && currentAdminTab === "worklog") {
-      fetchWorkLogBlobIds();
-    }
-  }, [selectedTimesheetForWorklogView, suiClient, toast, currentAdminTab]);
-
-  const handleDecryptWorkLog = async (blobId: string) => {
-    if (
-      !sealClientForAdmin ||
-      !sessionKeyForAdmin ||
-      !selectedTimesheetForWorklogView ||
-      !packageId ||
-      !suiClient
-    ) {
-      toast({
-        title: "Prerequisites Missing",
-        description:
-          "Admin Seal session not ready, timesheet not selected, or client/packageId missing.",
-        variant: "destructive",
-      });
-      return;
-    }
-    if (sessionKeyForAdmin.isExpired()) {
-      toast({
-        title: "Session Expired",
-        description:
-          "Admin Seal session key has expired. Please re-initialize.",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    setIsDecrypting(blobId);
-    // Clear previous result for this specific blobId before attempting again
-    setDecryptionResults((prev) => ({
-      ...prev,
-      [blobId]: {
-        error: undefined,
-        url: undefined,
-        data: undefined,
-        rawDecrypted: undefined,
-      },
-    }));
-
-    console.log(`Attempting to download and decrypt: blobId=${blobId}`);
-
-    let downloadedArrayBuffer: ArrayBuffer | null = null;
-
-    try {
-      // 1. Download from Walrus
-      if (WALRUS_SERVICES.length === 0) {
-        throw new Error("No Walrus services configured for download.");
-      }
-      // Use aggregator URL for downloading, assuming blobs are fetched from aggregators
-      const selectedService = WALRUS_SERVICES[0]; // Or make selectable if multiple aggregators
-      let baseUrl = selectedService.aggregatorUrl;
-      baseUrl = baseUrl.endsWith("/") ? baseUrl.slice(0, -1) : baseUrl; // Remove trailing slash
-      const walrusDownloadUrl = `${baseUrl}/v1/blobs/${blobId}`; // Standard path for blob retrieval
-
-      console.log("Downloading from Walrus aggregator:", walrusDownloadUrl);
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 15000); // 15s timeout
-      const response = await fetch(walrusDownloadUrl, {
-        signal: controller.signal,
-      });
-      clearTimeout(timeout);
-
-      if (!response.ok) {
-        throw new Error(
-          `Failed to download blob ${blobId} from Walrus. Status: ${response.status} ${response.statusText}`
-        );
-      }
-      downloadedArrayBuffer = await response.arrayBuffer();
-      console.log(
-        `Blob ${blobId} downloaded successfully (${downloadedArrayBuffer.byteLength} bytes).`
-      );
-
-      // 2. Parse Encrypted Object to get the fullSealPolicyId
-      if (!downloadedArrayBuffer) throw new Error("Downloaded data is null.");
-      const encryptedBlobBytes = new Uint8Array(downloadedArrayBuffer);
-      const parsedEncryptedObject = EncryptedObject.parse(encryptedBlobBytes);
-      const fullSealPolicyId = parsedEncryptedObject.id; // This is the ID for Seal SDK (fetchKeys, decrypt)
-      console.log(`Parsed fullSealPolicyId for Seal SDK: ${fullSealPolicyId}`);
-
-      // 3. Construct Transaction for seal_approve
-      const tx = new Transaction();
-      const sealApproveTarget =
-        `${packageId}::whitelist::seal_approve` as `${string}::${string}::${string}`;
-      tx.moveCall({
-        target: sealApproveTarget,
-        arguments: [
-          tx.pure.vector("u8", fromHex(fullSealPolicyId)), // Use the policy ID from the blob
-          tx.object(selectedTimesheetForWorklogView.id), // The Allowlist/Timesheet object ID
-        ],
-      });
-      console.log(
-        "Building transaction for seal_approve with policy ID:",
-        fullSealPolicyId,
-        "and timesheet:",
-        selectedTimesheetForWorklogView.id
-      );
-      const txBytes = await tx.build({
-        client: suiClient,
-        onlyTransactionKind: true,
-      });
-
-      // 4. Seal SDK fetchKeys
-      console.log("Fetching keys for Seal decryption...");
-      await sealClientForAdmin.fetchKeys({
-        ids: [fullSealPolicyId],
-        txBytes,
-        sessionKey: sessionKeyForAdmin,
-        threshold: ENCRYPTION_THRESHOLD_FOR_DECRYPT,
-      });
-      console.log("Keys fetched successfully.");
-
-      // 5. Seal SDK decrypt
-      console.log("Decrypting blob data...");
-      const decryptedDataArray = await sealClientForAdmin.decrypt({
-        data: encryptedBlobBytes, // Use the original downloaded bytes
-        sessionKey: sessionKeyForAdmin,
-        txBytes,
-      });
-      console.log(
-        `Data decrypted successfully (${decryptedDataArray.byteLength} bytes)`
-      );
-
-      // 6. Process Decrypted Data & Update State (Attempt to determine type)
-      setDecryptionResults((prev) => ({
-        ...prev,
-        [blobId]: { rawDecrypted: decryptedDataArray }, // Store raw first
-      }));
-
-      // Try to parse as JSON (common for work logs)
-      try {
-        const decodedText = new TextDecoder().decode(decryptedDataArray);
-        const jsonData = JSON.parse(decodedText);
-        setDecryptionResults((prev) => ({
-          ...prev,
-          [blobId]: { ...prev[blobId], data: jsonData, type: "json" },
-        }));
-        toast({
-          title: "Decryption Successful",
-          description: `Blob ${blobId} content decrypted (JSON).`,
-        });
-        console.log("Decrypted content (JSON):", jsonData);
-      } catch (jsonError) {
-        // If not JSON, try to display as image (common for other use cases, maybe work log has a screenshot?)
-        // This is a guess; adjust based on expected content types.
-        console.log(
-          "Could not parse decrypted data as JSON, attempting image display.",
-          jsonError
-        );
-        try {
-          const imageBlob = new Blob([decryptedDataArray], {
-            type: "image/jpeg",
-          }); // Or png, etc.
-          const imageUrl = URL.createObjectURL(imageBlob);
-          setDecryptionResults((prev) => ({
-            ...prev,
-            [blobId]: { ...prev[blobId], url: imageUrl, type: "image" },
-          }));
-          toast({
-            title: "Decryption Successful",
-            description: `Blob ${blobId} content decrypted (Image).`,
-          });
-        } catch (imageError) {
-          console.error(
-            "Could not create image URL from decrypted data:",
-            imageError
-          );
-          setDecryptionResults((prev) => ({
-            ...prev,
-            [blobId]: {
-              ...prev[blobId],
-              error:
-                "Decrypted, but cannot display (not JSON or common image).",
-              type: "binary",
-            },
-          }));
-          toast({
-            title: "Decryption Note",
-            description: `Blob ${blobId} decrypted but format not automatically viewable.`,
-          });
-        }
-      }
-    } catch (err: any) {
-      console.error(`Error decrypting blob ${blobId}:`, err);
-      let detailedError = err.message || "Decryption failed";
-      if (err instanceof NoAccessError) {
-        detailedError =
-          "No access to decryption keys. Ensure you have permission for this policy.";
-      }
-      setDecryptionResults((prev) => ({
-        ...prev,
-        [blobId]: { error: detailedError },
-      }));
-      toast({
-        title: "Decryption Error",
-        description: detailedError,
-        variant: "destructive",
-      });
-    } finally {
-      setIsDecrypting(null);
-    }
-  };
-
   return (
     <div className="container mx-auto px-6 py-8">
       <div className="mb-6">
@@ -1032,25 +606,16 @@ export default function AdminPage() {
           <Tabs
             value={currentAdminTab}
             onValueChange={(value) =>
-              setCurrentAdminTab(
-                value as "timesheet" | "worklog" | "pendingattachments"
-              )
+              setCurrentAdminTab(value as "timesheet" | "pendingattachments")
             }
           >
-            <TabsList className="grid w-full grid-cols-3">
+            <TabsList className="grid w-full grid-cols-2">
               <TabsTrigger
                 value="timesheet"
                 className="flex items-center space-x-2"
               >
                 <Clock className="h-4 w-4" />
                 <span>Manage Timesheet</span>
-              </TabsTrigger>
-              <TabsTrigger
-                value="worklog"
-                className="flex items-center space-x-2"
-              >
-                <Users className="h-4 w-4" />
-                <span>Manage Employee Work Log</span>
               </TabsTrigger>
               <TabsTrigger
                 value="pendingattachments"
@@ -1062,13 +627,6 @@ export default function AdminPage() {
             </TabsList>
 
             <TabsContent value="timesheet" className="mt-6">
-              <AdminSealSetup
-                initializeAdminSealSession={initializeAdminSealSession}
-                isInitializingSealAdmin={isInitializingSealAdmin}
-                sessionKeyForAdmin={sessionKeyForAdmin}
-                adminSealError={adminSealError}
-              />
-
               <CreateTimesheetSuiForm
                 createForm={createForm}
                 setCreateForm={setCreateForm}
@@ -1086,141 +644,6 @@ export default function AdminPage() {
                 onAddEmployee={handleAddEmployee}
                 onViewWorkLog={handleViewWorkLog}
               />
-            </TabsContent>
-
-            <TabsContent value="worklog" className="mt-6">
-              {!selectedTimesheetForWorklogView ? (
-                <Card>
-                  <CardHeader>
-                    <CardTitle>Manage Employee Work Log</CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <p className="text-muted-foreground">
-                      Select a timesheet from the "Manage Timesheet" tab to view
-                      its work log markers.
-                    </p>
-                  </CardContent>
-                </Card>
-              ) : (
-                <Card>
-                  <CardHeader>
-                    <CardTitle>
-                      Work Log Blobs for: {selectedTimesheetForWorklogView.name}
-                    </CardTitle>
-                    <p className="text-sm text-muted-foreground font-mono">
-                      Timesheet ID: {selectedTimesheetForWorklogView.id}
-                    </p>
-                  </CardHeader>
-                  <CardContent>
-                    {isLoadingWorkLogMarkers ? (
-                      <div className="flex items-center justify-center py-8">
-                        <Loader2 className="h-6 w-6 animate-spin" />{" "}
-                        <span className="ml-2">Loading blob IDs...</span>
-                      </div>
-                    ) : onChainBlobIds.length === 0 ? (
-                      <p className="text-muted-foreground text-center py-4">
-                        No on-chain work log blob IDs found for this timesheet.
-                      </p>
-                    ) : (
-                      <div className="space-y-4">
-                        {onChainBlobIds.map((blobId) => (
-                          <div
-                            key={blobId}
-                            className="border rounded-lg p-4 bg-card/50"
-                          >
-                            <div className="flex justify-between items-center">
-                              <div>
-                                <p className="font-semibold">
-                                  Blob ID:{" "}
-                                  <span className="font-mono text-xs">
-                                    {blobId}
-                                  </span>
-                                </p>
-                                {/* Seal Policy ID is now derived after download, so not displayed directly from initial fetch */}
-                              </div>
-                              <Button
-                                size="sm"
-                                onClick={() => handleDecryptWorkLog(blobId)}
-                                disabled={
-                                  isDecrypting === blobId ||
-                                  !sealClientForAdmin ||
-                                  !sessionKeyForAdmin ||
-                                  sessionKeyForAdmin.isExpired()
-                                }
-                              >
-                                {isDecrypting === blobId ? (
-                                  <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                                ) : (
-                                  <Eye className="h-4 w-4 mr-2" />
-                                )}
-                                {isDecrypting === blobId
-                                  ? "Decrypting..."
-                                  : decryptionResults[blobId]?.url ||
-                                    decryptionResults[blobId]?.data
-                                  ? "View Again"
-                                  : "Decrypt & View"}
-                              </Button>
-                            </div>
-                            {decryptionResults[blobId]?.url &&
-                              decryptionResults[blobId]?.type === "image" && (
-                                <div className="mt-2">
-                                  <p className="text-sm font-medium">
-                                    Decrypted Image:
-                                  </p>
-                                  <img
-                                    src={decryptionResults[blobId]?.url}
-                                    alt={`Decrypted content for ${blobId}`}
-                                    className="rounded-md border max-w-xs max-h-xs"
-                                  />
-                                </div>
-                              )}
-                            {decryptionResults[blobId]?.data &&
-                              decryptionResults[blobId]?.type === "json" && (
-                                <div className="mt-2">
-                                  <p className="text-sm font-medium">
-                                    Decrypted Data (JSON):
-                                  </p>
-                                  <pre className="text-xs bg-muted p-2 rounded-md overflow-auto">
-                                    {JSON.stringify(
-                                      decryptionResults[blobId]?.data,
-                                      null,
-                                      2
-                                    )}
-                                  </pre>
-                                </div>
-                              )}
-                            {decryptionResults[blobId]?.rawDecrypted &&
-                              !(
-                                decryptionResults[blobId]?.data ||
-                                decryptionResults[blobId]?.url
-                              ) &&
-                              decryptionResults[blobId]?.type === "binary" && (
-                                <div className="mt-2">
-                                  <p className="text-sm font-medium">
-                                    Decrypted Data (Binary - first 100 bytes as
-                                    hex):
-                                  </p>
-                                  <pre className="text-xs bg-muted p-2 rounded-md overflow-auto">
-                                    {toHEX(
-                                      decryptionResults[
-                                        blobId
-                                      ]?.rawDecrypted!.slice(0, 100)
-                                    )}
-                                  </pre>
-                                </div>
-                              )}
-                            {decryptionResults[blobId]?.error && (
-                              <p className="mt-2 text-sm text-destructive">
-                                Error: {decryptionResults[blobId]?.error}
-                              </p>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-              )}
             </TabsContent>
 
             <TabsContent value="pendingattachments" className="mt-6">

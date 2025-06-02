@@ -1,6 +1,6 @@
 import { SealClient } from "@mysten/seal";
 // import { Transaction } from "@mysten/sui/transactions"; // No longer creating transactions here
-import { fromHex, toHEX } from "@/lib/suiUtils";
+import { fromHex, toHex } from "@mysten/bcs";
 import { storeBlobOnWalrus } from "./walrusService";
 // import type { SuiTransactionBlockResponse } from "@mysten/sui/client"; // No longer returning this
 
@@ -74,7 +74,7 @@ ProcessAndSubmitWorkLogParams): Promise<ProcessWorkLogResult> {
 
   const nonce = crypto.getRandomValues(new Uint8Array(5));
   const timesheetObjectIdBytes = fromHex(timesheet.id);
-  const sealLogId = toHEX(
+  const sealLogId = toHex(
     new Uint8Array([
       ...Array.from(timesheetObjectIdBytes),
       ...Array.from(nonce),

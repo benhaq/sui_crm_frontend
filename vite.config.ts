@@ -29,21 +29,21 @@ export default defineConfig({
     outDir: path.resolve(import.meta.dirname, "dist/public"),
     emptyOutDir: true,
   },
-  optimizeDeps: {
-    esbuildOptions: {
-      define: {
-        global: "globalThis",
-      },
-      plugins: [
-        {
-          name: "node-globals-polyfill",
-          setup(build) {
-            build.onResolve({ filter: /^buffer$/ }, (args) => ({
-              path: require.resolve("buffer/"),
-            }));
-          },
-        },
-      ],
-    },
-  },
+  // optimizeDeps: {
+  //   esbuildOptions: {
+  //     define: {
+  //       global: "globalThis",
+  //     },
+  //     plugins: [
+  //       {
+  //         name: "node-globals-polyfill",
+  //         setup(build) {
+  //           build.onResolve({ filter: /^buffer$/ }, (args) => ({
+  //             path: require.resolve("buffer/"),
+  //           }));
+  //         },
+  //       },
+  //     ],
+  //   },
+  // },
 });

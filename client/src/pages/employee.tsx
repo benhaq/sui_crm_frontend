@@ -27,7 +27,6 @@ import {
   DisplayableWorkRecord,
 } from "@/components/WorkRecordTab";
 import { SalaryTab, SalaryRecordToDisplay } from "@/components/SalaryTab";
-import { fromHex, toHEX } from "@/lib/suiUtils";
 import { processAndSubmitWorkLog } from "@/services/workLogManager";
 import { WALRUS_SERVICES } from "@/services/walrusService";
 import {
@@ -39,6 +38,7 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
+import { fromHex, toHex } from "@mysten/bcs";
 
 // --- BEGIN Constants ---
 // Ensure these are correctly set for your environment or move to networkConfig
@@ -67,7 +67,7 @@ function createDailyEmployeeId(
   const combined = new Uint8Array(policyObjectBytes.length + idData.length);
   combined.set(policyObjectBytes);
   combined.set(idData, policyObjectBytes.length);
-  return toHEX(combined);
+  return toHex(combined);
 }
 
 // --- END Placeholder Constants and Helpers ---
@@ -465,7 +465,7 @@ export default function EmployeePage() {
         sessionKey = new SessionKey({
           address: currentWalletAddress,
           packageId: packageId,
-          ttlMin: 10,
+          ttlMin: 30,
           client: new SuiGraphQLClient({
             url: "https://sui-testnet.mystenlabs.com/graphql",
           }) as any,
@@ -474,7 +474,6 @@ export default function EmployeePage() {
         console.log(
           "Please sign this message in your wallet to activate the session key for Seal:"
         );
-        console.log(toHEX(personalMessage));
 
         const { signature: signedPersonalMessage } =
           await signPersonalMessageAsync({ message: personalMessage });
@@ -889,14 +888,13 @@ export default function EmployeePage() {
         sessionKey = new SessionKey({
           address: currentWalletAddress as string,
           packageId: packageId,
-          ttlMin: 10,
+          ttlMin: 30,
           client: suiClient as any,
         });
         const personalMessage = sessionKey.getPersonalMessage();
         console.log(
           "Please sign this message for Seal SessionKey activation (checkout):"
         );
-        console.log(toHEX(personalMessage));
         const { signature: signedPersonalMessage } =
           await signPersonalMessageAsync({ message: personalMessage });
         sessionKey.setPersonalMessageSignature(signedPersonalMessage);

@@ -8,6 +8,7 @@ import { useEffect } from "react";
 import AdminPage from "@/pages/admin";
 import EmployeePage from "@/pages/employee";
 import WorkLogDetailPage from "@/pages/work-log-detail";
+import TimeSheetContent from "@/components/TimeSheetContent";
 import NotFound from "@/pages/not-found";
 import {
   useCurrentAccount,
@@ -159,6 +160,15 @@ function App() {
           ) : (
             <Redirect to="/employee" />
           )}
+        </Route>
+        <Route path="/timesheet/:id">
+          {(params) =>
+            currentIsAdminForRouting ? (
+              <TimeSheetContent />
+            ) : (
+              <Redirect to="/employee" />
+            )
+          }
         </Route>
         <Route path="/admin/timesheet/:id">
           {(params) =>

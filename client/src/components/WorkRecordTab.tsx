@@ -3,7 +3,6 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { LogIn, LogOut, Clock, Loader2 } from "lucide-react";
-import type { Timesheet } from "@shared/schema"; // Assuming Timesheet type
 
 // Copied from employee.tsx - consider moving to a shared types file
 export interface DisplayableWorkRecord {
