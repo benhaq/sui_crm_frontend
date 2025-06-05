@@ -39,17 +39,34 @@ interface ProcessAndSubmitWorkLogParams {
   // currentUserAddress: string; // Not directly used for Walrus upload if sending to ADMIN_ADDRESS
 }
 
+function createDailyWorkLogId(
+  employeeAddr: string,
+  policyObjectId: string // Typically the whitelist ID or a specific policy object ID
+): string {
+  const policyObjectBytes = fromHex(policyObjectId); // Ensure policyObjectId is a valid hex string if it's an object ID
+
+  const date = new Date();
+  // Use UTC to avoid timezone issues for daily IDs
+  const dateString = `${date.getUTCFullYear()}-${date.getUTCMonth()}-${date.getUTCDate()}`;
+  const encoder = new TextEncoder();
+  const idData = encoder.encode(`${employeeAddr}_${dateString}_worklog`);
+  console.log(
+    `Generated Seal ID for policy object ${policyObjectId}: ${employeeAddr}_${dateString}_worklog`
+  );
+  const combined = new Uint8Array(policyObjectBytes.length + idData.length);
+  combined.set(policyObjectBytes);
+  combined.set(idData, policyObjectBytes.length);
+  return toHex(combined);
+}
+
 export async function processAndSubmitWorkLog({
   employeeEventData,
   timesheet,
   sealClient,
   packageId,
   encryptionThreshold,
-  // moduleWhitelist, // Removed
-  // signAndExecuteTransaction, // Removed
   selectedWalrusServiceId,
-}: // currentUserAddress, // Removed (using ADMIN_ADDRESS for send_object_to)
-ProcessAndSubmitWorkLogParams): Promise<ProcessWorkLogResult> {
+}: ProcessAndSubmitWorkLogParams): Promise<ProcessWorkLogResult> {
   // Changed return type
   console.log("Processing work log for Walrus upload:", {
     employeeEventData,
@@ -72,14 +89,9 @@ ProcessAndSubmitWorkLogParams): Promise<ProcessWorkLogResult> {
   const workLogBytes = new TextEncoder().encode(workLogJsonString);
   console.log("Work log JSON prepared:", workLogJsonString);
 
-  const nonce = crypto.getRandomValues(new Uint8Array(5));
-  const timesheetObjectIdBytes = fromHex(timesheet.id);
-  const sealLogId = toHex(
-    new Uint8Array([
-      ...Array.from(timesheetObjectIdBytes),
-      ...Array.from(nonce),
-      ...Array.from(new TextEncoder().encode("_worklog")),
-    ])
+  const sealLogId = createDailyWorkLogId(
+    employeeEventData.employee,
+    timesheet.id
   );
   console.log(
     `Generated Seal ID for work log: ${sealLogId} using timesheet ${timesheet.id}`

@@ -30,10 +30,12 @@ import {
   EncryptedObject,
 } from "@mysten/seal";
 import { SuiGraphQLClient } from "@mysten/sui/graphql";
+import { SuiClient, getFullnodeUrl } from "@mysten/sui/client";
 import { set as idbSet, get as idbGet, del as idbDel } from "idb-keyval";
 import { WALRUS_SERVICES } from "@/services/walrusService";
 import { fromHex, toHex } from "@mysten/bcs";
 import { Textarea } from "@/components/ui/textarea";
+import { constructMoveCall } from "@/lib/suiUtils";
 
 // Types
 interface TimesheetInfo {
@@ -96,7 +98,7 @@ export default function TimeSheetContent() {
   >([]);
 
   const KEY_SERVER_OBJECT_IDS_TESTNET = getAllowlistedKeyServers("testnet");
-  const ENCRYPTION_THRESHOLD_FOR_DECRYPT = 1;
+  const ENCRYPTION_THRESHOLD_FOR_DECRYPT = 2;
 
   // Initialize Admin Seal Session
   const initializeAdminSealSession = async () => {
@@ -114,7 +116,10 @@ export default function TimeSheetContent() {
     try {
       const client = new SealClient({
         suiClient: suiClient as any,
-        serverObjectIds: KEY_SERVER_OBJECT_IDS_TESTNET.map((id) => [id, 1]),
+        serverConfigs: KEY_SERVER_OBJECT_IDS_TESTNET.map((id) => ({
+          objectId: id,
+          weight: 1,
+        })),
         verifyKeyServers: false,
       });
       setSealClientForAdmin(client);
@@ -132,11 +137,12 @@ export default function TimeSheetContent() {
         console.log("TimeSheet: Found existing session key in IndexedDB...");
         const importedSk = await SessionKey.import(
           storedSessionData.exportedKey,
-          new SuiGraphQLClient({
-            url: "https://sui-testnet.mystenlabs.com/graphql",
-          }) as any
+          new SuiClient({ url: getFullnodeUrl("testnet") })
         );
-        if (!importedSk.isExpired()) {
+        if (
+          !importedSk.isExpired() ||
+          importedSk.getAddress() !== currentAccount.address
+        ) {
           importedSk.setPersonalMessageSignature(storedSessionData.signature);
           sk = importedSk;
           console.log("TimeSheet: SessionKey imported successfully.");
@@ -154,9 +160,7 @@ export default function TimeSheetContent() {
           address: currentAccount.address,
           packageId: packageId,
           ttlMin: 30,
-          client: new SuiGraphQLClient({
-            url: "https://sui-testnet.mystenlabs.com/graphql",
-          }) as any,
+          suiClient: new SuiClient({ url: getFullnodeUrl("testnet") }),
         });
 
         const personalMessage = sk.getPersonalMessage();
@@ -427,15 +431,12 @@ export default function TimeSheetContent() {
 
       // 3. Construct Transaction for seal_approve
       const tx = new Transaction();
-      const sealApproveTarget =
-        `${packageId}::whitelist::seal_approve` as `${string}::${string}::${string}`;
-      tx.moveCall({
-        target: sealApproveTarget,
-        arguments: [
-          tx.pure.vector("u8", fromHex(fullSealPolicyId)),
-          tx.object(timesheetId),
-        ],
-      });
+
+      const sealApproveTxConstructor = constructMoveCall(
+        packageId,
+        timesheetId
+      );
+      sealApproveTxConstructor(tx, fullSealPolicyId);
 
       const txBytes = await tx.build({
         client: suiClient,
@@ -444,7 +445,7 @@ export default function TimeSheetContent() {
 
       const decryptStartTime = Date.now();
 
-      // 4. Seal SDK fetchKeys
+      // 5. Seal SDK fetchKeys
       console.log("Fetching keys for Seal decryption...");
       await sealClientForAdmin.fetchKeys({
         ids: [fullSealPolicyId],
@@ -453,7 +454,7 @@ export default function TimeSheetContent() {
         threshold: ENCRYPTION_THRESHOLD_FOR_DECRYPT,
       });
 
-      // 5. Seal SDK decrypt
+      // 6. Seal SDK decrypt
       console.log("Decrypting blob data...");
       const decryptedDataArray = await sealClientForAdmin.decrypt({
         data: encryptedBlobBytes,
@@ -465,7 +466,7 @@ export default function TimeSheetContent() {
         `Data decrypted successfully (${decryptedDataArray.byteLength} bytes) in ${decryptTime}ms`
       );
 
-      // 6. Process Decrypted Data
+      // 7. Process Decrypted Data
       setDecryptionResults((prev) => ({
         ...prev,
         [blobId]: {

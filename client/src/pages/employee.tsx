@@ -1,11 +1,18 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
 import { useWorkRecords } from "@/hooks/use-work-records";
 import { useAppStore } from "@/lib/store";
-import { Clock, Wallet, DollarSign } from "lucide-react";
+import {
+  Clock,
+  Wallet,
+  DollarSign,
+  AlertTriangle,
+  CheckCircle,
+  HelpCircle,
+} from "lucide-react";
 import type { SalaryRecord } from "@shared/schema";
 import {
   useSuiClient,
@@ -39,6 +46,9 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { fromHex, toHex } from "@mysten/bcs";
+import { getFullnodeUrl, SuiClient } from "@mysten/sui/client";
+import { constructMoveCall, MoveCallConstructor } from "@/lib/suiUtils";
+import { ToastAction } from "@/components/ui/toast";
 
 // --- BEGIN Constants ---
 // Ensure these are correctly set for your environment or move to networkConfig
@@ -46,8 +56,7 @@ const MODULE_WHITELIST = "whitelist";
 const MODULE_EMPLOYEE_LOG = "employee_log";
 const CLOCK_OBJECT_ID = "0x6"; // Standard Sui Clock object ID
 
-const KEY_SERVER_OBJECT_IDS_TESTNET = getAllowlistedKeyServers("testnet");
-const ENCRYPTION_THRESHOLD = 1; // Example: 1-out-of-N key servers
+const ENCRYPTION_THRESHOLD = 2; // Example: 2-out-of-N key servers
 
 function createDailyEmployeeId(
   employeeAddr: string,
@@ -63,7 +72,6 @@ function createDailyEmployeeId(
   console.log(
     `Generated Seal ID for policy object ${policyObjectId}: ${employeeAddr}_${dateString}_daily_access`
   );
-  // The ID for Seal is typically a hex string of the combined bytes
   const combined = new Uint8Array(policyObjectBytes.length + idData.length);
   combined.set(policyObjectBytes);
   combined.set(idData, policyObjectBytes.length);
@@ -71,6 +79,100 @@ function createDailyEmployeeId(
 }
 
 // --- END Placeholder Constants and Helpers ---
+
+// Helper function for daily Seal access verification
+async function performDailySealAccessVerification(
+  sealClient: SealClient,
+  sessionKey: SessionKey,
+  suiClient: SuiClient, // This type should now be recognized
+  packageId: string,
+  currentAddress: string,
+  whitelistObjectId: string,
+  toast: Function // Pass the toast function for user feedback
+): Promise<boolean> {
+  console.log(
+    "Performing daily Seal access verification for:",
+    currentAddress,
+    "on whitelist:",
+    whitelistObjectId
+  );
+  try {
+    const employeePolicyId = createDailyEmployeeId(
+      currentAddress,
+      whitelistObjectId
+    );
+    const dataToEncrypt = new Uint8Array([1]); // Dummy data to encrypt/decrypt
+
+    console.log(`Encrypting with policy ID: ${employeePolicyId}`);
+    const { encryptedObject } = await sealClient.encrypt({
+      threshold: ENCRYPTION_THRESHOLD,
+      packageId: packageId,
+      id: employeePolicyId,
+      data: dataToEncrypt,
+    });
+
+    if (!encryptedObject) {
+      throw new Error("Failed to encrypt daily access token.");
+    }
+    console.log("Daily access token encrypted.");
+
+    const txbSealApprove = new Transaction();
+    const sealApproveTxConstructor = constructMoveCall(
+      packageId,
+      whitelistObjectId
+    );
+    sealApproveTxConstructor(txbSealApprove, employeePolicyId);
+
+    const sealApproveTxBytes = await txbSealApprove.build({
+      client: suiClient, // Use the passed suiClient instance
+      onlyTransactionKind: true,
+    });
+    console.log("Seal approve transaction bytes built.");
+
+    console.log("Fetching keys for Seal approval...");
+    await sealClient.fetchKeys({
+      ids: [employeePolicyId],
+      txBytes: sealApproveTxBytes,
+      sessionKey,
+      threshold: ENCRYPTION_THRESHOLD,
+    });
+    console.log("Keys fetched successfully.");
+
+    console.log("Attempting Seal decryption to verify daily access...");
+    const decryptedPayload = await sealClient.decrypt({
+      data: encryptedObject,
+      sessionKey: sessionKey,
+      txBytes: sealApproveTxBytes,
+    });
+
+    if (decryptedPayload && decryptedPayload[0] === 1) {
+      console.log("Seal daily access approved!");
+      toast({
+        title: "Seal Access Verified",
+        description: "Daily access grant confirmed.",
+        variant: "default",
+      });
+      return true;
+    }
+    console.warn("Seal daily access DENIED or decryption failed.");
+    toast({
+      title: "Seal Access Denied",
+      description: "Could not verify daily access grant with Seal.",
+      variant: "destructive",
+    });
+    return false;
+  } catch (error: any) {
+    console.error("Error during daily Seal access verification:", error);
+    toast({
+      title: "Seal Verification Error",
+      description:
+        error.message ||
+        "An unexpected error occurred during Seal verification.",
+      variant: "destructive",
+    });
+    return false;
+  }
+}
 
 export default function EmployeePage() {
   const {
@@ -82,8 +184,6 @@ export default function EmployeePage() {
     setSelectedTimesheetForCheckin,
   } = useAppStore();
   console.log("availableTimesheets", availableTimesheets);
-  const { workRecords, checkIn, checkOut, getTodaysHours, isCheckedIn } =
-    useWorkRecords(selectedTimesheetForCheckin?.id);
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const currentAccount = useCurrentAccount();
@@ -112,25 +212,189 @@ export default function EmployeePage() {
   const [todaysHoursOnChain, setTodaysHoursOnChain] = useState<number>(0);
 
   // Sui hooks
-  const suiClient = useSuiClient();
+  const suiClientFromHook = useSuiClient();
   const { mutateAsync: signAndExecuteTransactionMutation } =
     useSignAndExecuteTransaction();
   const { mutateAsync: signPersonalMessageAsync } = useSignPersonalMessage();
-  const { mutateAsync: signTransactionMutation } = useSignTransaction();
   const packageId = useNetworkVariable("packageId");
 
-  // Define fetchAndProcessWorkHistory using useCallback
+  // State for Seal Client and Session Key
+  const [sealClient, setSealClient] = useState<SealClient | null>(null);
+  const [sessionKey, setSessionKey] = useState<SessionKey | null>(null);
+  const [isSealSessionInitializing, setIsSealSessionInitializing] =
+    useState(false);
+  const [sealSessionError, setSealSessionError] = useState<string | null>(null);
+
+  const initSealInProgressRef = useRef(false); // Ref to track ongoing initialization
+
+  // Function to initialize Seal Client and SessionKey
+  const initializeSealSession = useCallback(async () => {
+    if (initSealInProgressRef.current) {
+      console.log("EmployeePage: Seal initialization already in progress.");
+      return false;
+    }
+
+    // Quick exit: If we already have a valid session in state, do nothing.
+    if (sealClient && sessionKey && !sessionKey.isExpired()) {
+      console.log(
+        "EmployeePage: Seal session is already valid and active in state."
+      );
+      toast({
+        title: "Seal Session Ready",
+        description: "Using existing active session.",
+        variant: "default",
+      });
+      return true;
+    }
+
+    // Prerequisites check
+    if (!currentAccount?.address || !packageId || !suiClientFromHook) {
+      console.log("EmployeePage: Prerequisites for Seal init not met.");
+      setSealSessionError("Wallet not connected or network misconfigured.");
+      return false;
+    }
+
+    console.log("EmployeePage: Starting Seal session initialization...");
+    initSealInProgressRef.current = true;
+    setIsSealSessionInitializing(true);
+    setSealSessionError(null);
+
+    try {
+      const client =
+        sealClient ??
+        new SealClient({
+          suiClient: suiClientFromHook as any,
+          serverConfigs: getAllowlistedKeyServers("testnet").map((id) => ({
+            objectId: id,
+            weight: 1,
+          })),
+          verifyKeyServers: false,
+        });
+
+      if (!sealClient) {
+        setSealClient(client);
+        console.log("EmployeePage: SealClient instance created.");
+      }
+
+      const sessionKeyIdbKey = `seal-session-key-${currentAccount.address}-${packageId}`;
+
+      // Attempt to load from IDB
+      const storedSessionData = await idbGet(sessionKeyIdbKey);
+      if (
+        storedSessionData &&
+        storedSessionData.suiAddress === currentAccount.address
+      ) {
+        console.log("EmployeePage: Found session key in IDB, importing...");
+        try {
+          const importedSk = await SessionKey.import(
+            storedSessionData.exportedKey,
+            new SuiClient({ url: getFullnodeUrl("testnet") })
+          );
+          if (!importedSk.isExpired()) {
+            importedSk.setPersonalMessageSignature(storedSessionData.signature);
+            setSessionKey(importedSk);
+            console.log(
+              "EmployeePage: SessionKey imported successfully and is valid."
+            );
+            toast({ title: "Seal Session Ready", variant: "default" });
+            return true; // SUCCESS
+          } else {
+            console.log(
+              "EmployeePage: Stored session key is expired. Deleting from IDB."
+            );
+            await idbDel(sessionKeyIdbKey);
+          }
+        } catch (importError) {
+          console.warn(
+            "EmployeePage: Failed to import session key, will create a new one.",
+            importError
+          );
+          await idbDel(sessionKeyIdbKey); // Clean up corrupted key
+        }
+      }
+
+      // If we're here, we need a new key
+      console.log("EmployeePage: Creating new SessionKey...");
+      const sk = new SessionKey({
+        address: currentAccount.address,
+        packageId: packageId!,
+        ttlMin: 30,
+        suiClient: new SuiClient({ url: getFullnodeUrl("testnet") }),
+      });
+      const personalMessage = sk.getPersonalMessage();
+      toast({
+        title: "Seal Session Activation",
+        description: "Please sign the message in your wallet to activate Seal.",
+        duration: 7000,
+      });
+      const { signature: signedPersonalMessage } =
+        await signPersonalMessageAsync({ message: personalMessage });
+      sk.setPersonalMessageSignature(signedPersonalMessage);
+
+      console.log("EmployeePage: New SessionKey signed. Storing in IDB...");
+      await idbSet(sessionKeyIdbKey, {
+        exportedKey: sk.export(),
+        signature: signedPersonalMessage,
+        suiAddress: currentAccount.address,
+      });
+
+      setSessionKey(sk);
+      toast({ title: "Seal Session Ready", variant: "default" });
+      return true; // SUCCESS
+    } catch (error: any) {
+      console.error("EmployeePage: CATCH in initializeSealSession:", error);
+      setSealSessionError(
+        error.message || "Failed to initialize Seal session."
+      );
+      toast({
+        title: "Seal Session Error",
+        description: error.message || "Failed to initialize Seal.",
+        variant: "destructive",
+      });
+      // Cleanup on error
+      setSealClient(null);
+      setSessionKey(null);
+      return false; // Initialization failed
+    } finally {
+      setIsSealSessionInitializing(false);
+      initSealInProgressRef.current = false; // Reset ref lock
+      console.log("EmployeePage: initializeSealSession FINALLY block.");
+    }
+  }, [
+    currentAccount?.address,
+    packageId,
+    suiClientFromHook,
+    toast,
+    signPersonalMessageAsync,
+    sealClient,
+    sessionKey,
+  ]);
+
+  // Effect to clear Seal session if account/network changes
+  useEffect(() => {
+    // This effect now ONLY handles cleanup. Initialization is done on-demand by user action.
+    return () => {
+      console.log(
+        "useEffect for Seal: CLEANUP. Wallet/network changed. Clearing Seal session states."
+      );
+      setSealClient(null);
+      setSessionKey(null);
+      setIsSealSessionInitializing(false);
+      initSealInProgressRef.current = false;
+    };
+  }, [currentAccount?.address, packageId]);
+
   const fetchAndProcessWorkHistory = useCallback(async () => {
-    if (!suiClient || !packageId || !currentWalletAddress) {
+    if (!suiClientFromHook || !packageId || !currentAccount?.address) {
       setOnChainWorkRecords([]);
       return;
     }
     setIsLoadingHistory(true);
-    console.log("Fetching on-chain work history for", currentWalletAddress);
+    console.log("Fetching on-chain work history for", currentAccount.address);
 
     try {
       // Fetch CheckIn Events
-      const checkInEventsPromise = suiClient.queryEvents({
+      const checkInEventsPromise = suiClientFromHook.queryEvents({
         query: {
           MoveEventType: `${packageId}::events::EmployeeCheckInEvent`,
         },
@@ -139,7 +403,7 @@ export default function EmployeePage() {
       });
 
       // Fetch CheckOut Events
-      const checkOutEventsPromise = suiClient.queryEvents({
+      const checkOutEventsPromise = suiClientFromHook.queryEvents({
         query: {
           MoveEventType: `${packageId}::events::EmployeeCheckOutEvent`,
         },
@@ -155,7 +419,7 @@ export default function EmployeePage() {
         .filter(
           (event) =>
             event.parsedJson &&
-            (event.parsedJson as any).employee === currentWalletAddress
+            (event.parsedJson as any).employee === currentAccount.address
         )
         .map(
           (event) =>
@@ -166,7 +430,7 @@ export default function EmployeePage() {
         .filter(
           (event) =>
             event.parsedJson &&
-            (event.parsedJson as any).employee === currentWalletAddress
+            (event.parsedJson as any).employee === currentAccount.address
         )
         .map(
           (event) =>
@@ -289,9 +553,9 @@ export default function EmployeePage() {
       setIsLoadingHistory(false);
     }
   }, [
-    suiClient,
+    suiClientFromHook,
     packageId,
-    currentWalletAddress,
+    currentAccount?.address,
     toast,
     setOnChainWorkRecords,
     setIsLoadingHistory,
@@ -300,7 +564,7 @@ export default function EmployeePage() {
   ]); // Added all dependencies
 
   const employeeSpecificTimesheets = availableTimesheets.filter((ts) =>
-    ts.list.includes(currentWalletAddress || "")
+    ts.list.includes(currentAccount?.address || "")
   );
 
   useEffect(() => {
@@ -329,9 +593,9 @@ export default function EmployeePage() {
   >({
     queryKey: [
       "/api/salary-records",
-      { employeeAddress: currentWalletAddress },
+      { employeeAddress: currentAccount?.address },
     ],
-    enabled: !!currentWalletAddress,
+    enabled: !!currentAccount?.address,
   });
 
   // useEffect to fetch on-chain work history
@@ -388,7 +652,7 @@ export default function EmployeePage() {
       });
       return;
     }
-    if (!currentWalletAddress) {
+    if (!currentAccount?.address) {
       toast({
         title: "Wallet Not Connected",
         description: "Please connect your wallet address.",
@@ -397,9 +661,31 @@ export default function EmployeePage() {
       return;
     }
 
+    const sealSessionReady = await initializeSealSession();
+    if (
+      !sealSessionReady ||
+      !sealClient ||
+      !sessionKey ||
+      sessionKey.isExpired()
+    ) {
+      toast({
+        title: "Seal Session Not Ready",
+        description:
+          "Your Seal session is not active or has expired. Please re-initialize.",
+        variant: "destructive",
+        action: (
+          <ToastAction altText="Re-initialize" onClick={initializeSealSession}>
+            Re-initialize
+          </ToastAction>
+        ),
+      });
+      if (sessionKey?.isExpired()) console.log("CheckIn: Session key expired.");
+      return;
+    }
+
     toast({
       title: "Processing Check-In...",
-      description: "Please wait and approve transactions in your wallet.",
+      description: "Verifying Seal access...",
     });
 
     try {
@@ -414,304 +700,180 @@ export default function EmployeePage() {
         return;
       }
 
-      const sealClient = new SealClient({
-        suiClient: suiClient as any,
-        serverObjectIds: KEY_SERVER_OBJECT_IDS_TESTNET.map((id) => [id, 1]),
-        verifyKeyServers: false,
-      });
-
-      let dailyAccessCiphertext: Uint8Array | undefined;
-      let sessionKey: SessionKey | undefined;
-      const sessionKeyIdbKey = `seal-session-key-${currentWalletAddress}-${packageId}`;
-
-      // Attempt to load existing SessionKey (no separate try-catch)
-      const storedSessionData = await idbGet(sessionKeyIdbKey);
-
-      if (
-        storedSessionData &&
-        storedSessionData.exportedKey &&
-        storedSessionData.signature
-      ) {
-        console.log(
-          "Found existing session key data in IndexedDB, attempting to import..."
-        );
-        const importedSessionKey = await SessionKey.import(
-          storedSessionData.exportedKey,
-          new SuiGraphQLClient({
-            url: "https://sui-testnet.mystenlabs.com/graphql",
-          }) as any
-        );
-        if (!importedSessionKey.isExpired()) {
-          console.log(
-            "Imported session key is not expired. Re-applying signature..."
-          );
-          importedSessionKey.setPersonalMessageSignature(
-            storedSessionData.signature
-          );
-          sessionKey = importedSessionKey;
-          console.log(
-            "SessionKey imported and signature re-applied successfully."
-          );
-        } else {
-          console.log(
-            "Stored session key has expired or is invalid, creating a new one."
-          );
-          await idbDel(sessionKeyIdbKey);
-        }
-      }
-
-      if (!sessionKey) {
-        console.log("Creating new SessionKey as none was found or imported.");
-        sessionKey = new SessionKey({
-          address: currentWalletAddress,
-          packageId: packageId,
-          ttlMin: 30,
-          client: new SuiGraphQLClient({
-            url: "https://sui-testnet.mystenlabs.com/graphql",
-          }) as any,
-        });
-        const personalMessage = sessionKey.getPersonalMessage();
-        console.log(
-          "Please sign this message in your wallet to activate the session key for Seal:"
-        );
-
-        const { signature: signedPersonalMessage } =
-          await signPersonalMessageAsync({ message: personalMessage });
-        sessionKey.setPersonalMessageSignature(signedPersonalMessage);
-        console.log("New SessionKey initialized and signed.");
-
-        // Attempt to store new SessionKey AND its signature
-        await idbSet(sessionKeyIdbKey, {
-          exportedKey: sessionKey.export(),
-          signature: signedPersonalMessage,
-        });
-        console.log("New SessionKey and signature stored in IndexedDB.");
-      }
-
-      const employeePolicyId = createDailyEmployeeId(
-        currentWalletAddress,
-        whitelistObjectId
+      // Use the new helper function for Seal verification
+      const accessApproved = await performDailySealAccessVerification(
+        sealClient,
+        sessionKey,
+        suiClientFromHook,
+        packageId!,
+        currentAccount.address,
+        whitelistObjectId,
+        toast
       );
-      const dataToEncrypt = new Uint8Array([1]);
 
-      const { encryptedObject } = await sealClient.encrypt({
-        threshold: ENCRYPTION_THRESHOLD,
-        packageId: packageId,
-        id: employeePolicyId,
-        data: dataToEncrypt,
-      });
-      dailyAccessCiphertext = encryptedObject;
-      console.log("Daily access encrypted token created (ciphertext stored).");
+      if (!accessApproved) {
+        // Error toast is handled by performDailySealAccessVerification
+        return;
+      }
 
-      if (!dailyAccessCiphertext)
-        throw new Error("Daily access ciphertext not available.");
-      if (!sessionKey) throw new Error("SessionKey not initialized.");
-
-      const txbSealApproveCheckIn = new Transaction();
-      const sealApproveTarget =
-        `${packageId}::${MODULE_WHITELIST}::seal_approve` as `${string}::${string}::${string}`;
-      txbSealApproveCheckIn.moveCall({
-        target: sealApproveTarget,
+      // If access approved, proceed with the actual check-in transaction
+      const txbCheckIn = new Transaction();
+      const requestTarget =
+        `${packageId}::${MODULE_EMPLOYEE_LOG}::check_in` as `${string}::${string}::${string}`;
+      txbCheckIn.moveCall({
+        target: requestTarget,
         arguments: [
-          txbSealApproveCheckIn.pure.vector("u8", fromHex(employeePolicyId)),
-          txbSealApproveCheckIn.object(whitelistObjectId),
+          txbCheckIn.object(EMPLOYEE_LOG_ADDRESS),
+          txbCheckIn.object(whitelistObjectId!),
+          txbCheckIn.object(CLOCK_OBJECT_ID),
         ],
       });
-      const sealApproveTxBytes = await txbSealApproveCheckIn.build({
-        client: suiClient,
-        onlyTransactionKind: true,
-      });
 
-      console.log("Fetching keys for Seal approval...");
-      await sealClient.fetchKeys({
-        ids: [employeePolicyId],
-        txBytes: sealApproveTxBytes,
-        sessionKey,
-        threshold: ENCRYPTION_THRESHOLD,
+      console.log("Submitting actual check-in transaction...");
+      const checkInSubmissionResult = await signAndExecuteTransactionMutation({
+        transaction: txbCheckIn,
       });
 
       console.log(
-        "Attempting Seal decryption to verify daily access for check-in..."
+        "Check-In Transaction Digest:",
+        checkInSubmissionResult.digest
       );
-      const decryptedPayload = await sealClient.decrypt({
-        data: dailyAccessCiphertext,
-        sessionKey: sessionKey,
-        txBytes: sealApproveTxBytes,
-      });
 
-      if (decryptedPayload && decryptedPayload[0] === 1) {
-        console.log("Seal daily access approved for check-in!");
+      if (checkInSubmissionResult.digest) {
         toast({
-          title: "Seal Access Approved",
-          description: "Proceeding with check-in transaction.",
+          title: "Transaction Submitted",
+          description: `Digest: ${checkInSubmissionResult.digest.substring(
+            0,
+            10
+          )}... Waiting for finality...`,
         });
-
-        const txbCheckIn = new Transaction();
-        const requestTarget =
-          `${packageId}::${MODULE_EMPLOYEE_LOG}::check_in` as `${string}::${string}::${string}`;
-        txbCheckIn.moveCall({
-          target: requestTarget,
-          arguments: [
-            txbCheckIn.object(EMPLOYEE_LOG_ADDRESS),
-            txbCheckIn.object(whitelistObjectId!),
-            txbCheckIn.object(CLOCK_OBJECT_ID),
-          ],
+        // Wait for the transaction to be processed by the network
+        await suiClientFromHook.waitForTransaction({
+          digest: checkInSubmissionResult.digest,
         });
-
-        console.log("Submitting actual check-in transaction...");
-        const checkInSubmissionResult = await signAndExecuteTransactionMutation(
+        // Then, fetch the full transaction details
+        const fullCheckInResponse = await suiClientFromHook.getTransactionBlock(
           {
-            transaction: txbCheckIn,
-          }
-        );
-
-        console.log(
-          "Check-In Transaction Digest:",
-          checkInSubmissionResult.digest
-        );
-
-        if (checkInSubmissionResult.digest) {
-          toast({
-            title: "Transaction Submitted",
-            description: `Digest: ${checkInSubmissionResult.digest.substring(
-              0,
-              10
-            )}... Waiting for finality...`,
-          });
-          // Wait for the transaction to be processed by the network
-          await suiClient.waitForTransaction({
-            digest: checkInSubmissionResult.digest,
-          });
-          // Then, fetch the full transaction details
-          const fullCheckInResponse = await suiClient.getTransactionBlock({
             digest: checkInSubmissionResult.digest,
             options: { showEffects: true, showEvents: true },
+          }
+        );
+
+        if (fullCheckInResponse.effects?.status.status === "success") {
+          toast({
+            title: "Check-In Successful!",
+            description: `Transaction Digest: ${checkInSubmissionResult.digest.substring(
+              0,
+              10
+            )}...`,
+          });
+          queryClient.invalidateQueries({
+            queryKey: ["workRecords", selectedTimesheetForCheckin?.id],
+          });
+          queryClient.invalidateQueries({
+            queryKey: ["/api/salary-records"],
           });
 
-          if (fullCheckInResponse.effects?.status.status === "success") {
-            toast({
-              title: "Check-In Successful!",
-              description: `Transaction Digest: ${checkInSubmissionResult.digest.substring(
-                0,
-                10
-              )}...`,
-            });
-            queryClient.invalidateQueries({
-              queryKey: ["workRecords", selectedTimesheetForCheckin?.id],
-            });
-            queryClient.invalidateQueries({
-              queryKey: ["/api/salary-records"],
-            });
+          setIsActuallyCheckedInOnChain(true);
+          let optimisticCheckInTimeMs = Date.now();
 
-            setIsActuallyCheckedInOnChain(true);
-            let optimisticCheckInTimeMs = Date.now();
+          const checkInEventFromFullResponse = fullCheckInResponse.events?.find(
+            (event: any) =>
+              event.type === `${packageId}::events::EmployeeCheckInEvent` &&
+              event.parsedJson?.employee === currentAccount.address
+          );
 
-            const checkInEventFromFullResponse =
-              fullCheckInResponse.events?.find(
-                (event: any) =>
-                  event.type === `${packageId}::events::EmployeeCheckInEvent` &&
-                  event.parsedJson?.employee === currentWalletAddress
-              );
-
-            if (checkInEventFromFullResponse) {
-              optimisticCheckInTimeMs = parseInt(
-                (checkInEventFromFullResponse.parsedJson as any).check_in_time
-              );
-              console.log(
-                "Optimistic update using event time from full response:",
-                new Date(optimisticCheckInTimeMs).toLocaleTimeString()
-              );
-              toast({
-                title: "On-chain Check-in Verified",
-                description: `Event found. Check-in time: ${new Date(
-                  optimisticCheckInTimeMs
-                ).toLocaleTimeString()}`,
-              });
-            } else {
-              // Fallback: if event not in full response, try querying (as was done before) or use Date.now()
-              console.log(
-                "Check-in event not immediately in full response, attempting quick query for optimistic update..."
-              );
-              try {
-                const eventsResult = await suiClient.queryEvents({
-                  query: {
-                    MoveEventType: `${packageId}::events::EmployeeCheckInEvent`,
-                  },
-                  order: "descending",
-                  limit: 10,
-                });
-                const userCheckInEvent = eventsResult.data.find(
-                  (event) =>
-                    event.parsedJson &&
-                    (event.parsedJson as any).employee === currentWalletAddress
-                );
-                if (userCheckInEvent) {
-                  optimisticCheckInTimeMs = parseInt(
-                    (userCheckInEvent.parsedJson as any).check_in_time
-                  );
-                  console.log(
-                    "Optimistic update using event time from fallback query:",
-                    new Date(optimisticCheckInTimeMs).toLocaleTimeString()
-                  );
-                  toast({
-                    title: "On-chain Check-in Verified (Queried)",
-                    description: `Event found. Check-in time: ${new Date(
-                      optimisticCheckInTimeMs
-                    ).toLocaleTimeString()}`,
-                  });
-                }
-              } catch (e) {
-                console.warn(
-                  "Error querying event for optimistic update fallback:",
-                  e
-                );
-              }
-            }
-
-            setCurrentOnChainCheckInRecord({
-              id: `optimistic-${optimisticCheckInTimeMs}`,
-              employee: currentWalletAddress!,
-              date: new Date(optimisticCheckInTimeMs).toLocaleDateString(),
-              checkInDisplay: new Date(
-                optimisticCheckInTimeMs
-              ).toLocaleTimeString([], {
-                hour: "2-digit",
-                minute: "2-digit",
-              }),
-              checkOutDisplay: null,
-              durationDisplay: null,
-              status: "In Progress (on-chain)",
-              checkInTimestampMs: optimisticCheckInTimeMs,
-            });
-            fetchAndProcessWorkHistory();
-          } else {
-            console.error(
-              "Check-in transaction failed or had errors.",
-              fullCheckInResponse.effects?.status.error
+          if (checkInEventFromFullResponse) {
+            optimisticCheckInTimeMs = parseInt(
+              (checkInEventFromFullResponse.parsedJson as any).check_in_time
+            );
+            console.log(
+              "Optimistic update using event time from full response:",
+              new Date(optimisticCheckInTimeMs).toLocaleTimeString()
             );
             toast({
-              title: "Check-In Failed",
-              description:
-                fullCheckInResponse.effects?.status.error ||
-                "Transaction failed on-chain.",
-              variant: "destructive",
+              title: "On-chain Check-in Verified",
+              description: `Event found. Check-in time: ${new Date(
+                optimisticCheckInTimeMs
+              ).toLocaleTimeString()}`,
             });
+          } else {
+            // Fallback: if event not in full response, try querying (as was done before) or use Date.now()
+            console.log(
+              "Check-in event not immediately in full response, attempting quick query for optimistic update..."
+            );
+            try {
+              const eventsResult = await suiClientFromHook.queryEvents({
+                query: {
+                  MoveEventType: `${packageId}::events::EmployeeCheckInEvent`,
+                },
+                order: "descending",
+                limit: 10,
+              });
+              const userCheckInEvent = eventsResult.data.find(
+                (event) =>
+                  event.parsedJson &&
+                  (event.parsedJson as any).employee === currentAccount.address
+              );
+              if (userCheckInEvent) {
+                optimisticCheckInTimeMs = parseInt(
+                  (userCheckInEvent.parsedJson as any).check_in_time
+                );
+                console.log(
+                  "Optimistic update using event time from fallback query:",
+                  new Date(optimisticCheckInTimeMs).toLocaleTimeString()
+                );
+                toast({
+                  title: "On-chain Check-in Verified (Queried)",
+                  description: `Event found. Check-in time: ${new Date(
+                    optimisticCheckInTimeMs
+                  ).toLocaleTimeString()}`,
+                });
+              }
+            } catch (e) {
+              console.warn(
+                "Error querying event for optimistic update fallback:",
+                e
+              );
+            }
           }
+
+          setCurrentOnChainCheckInRecord({
+            id: `optimistic-${optimisticCheckInTimeMs}`,
+            employee: currentAccount.address!,
+            date: new Date(optimisticCheckInTimeMs).toLocaleDateString(),
+            checkInDisplay: new Date(
+              optimisticCheckInTimeMs
+            ).toLocaleTimeString([], {
+              hour: "2-digit",
+              minute: "2-digit",
+            }),
+            checkOutDisplay: null,
+            durationDisplay: null,
+            status: "In Progress (on-chain)",
+            checkInTimestampMs: optimisticCheckInTimeMs,
+          });
+          fetchAndProcessWorkHistory();
         } else {
           console.error(
-            "Check-in transaction submission failed, no digest returned."
+            "Check-in transaction failed or had errors.",
+            fullCheckInResponse.effects?.status.error
           );
           toast({
-            title: "Check-In Submission Failed",
-            description: "Could not submit transaction to the network.",
+            title: "Check-In Failed",
+            description:
+              fullCheckInResponse.effects?.status.error ||
+              "Transaction failed on-chain.",
             variant: "destructive",
           });
         }
       } else {
-        console.error("Seal daily access DENIED for check-in.");
+        console.error(
+          "Check-in transaction submission failed, no digest returned."
+        );
         toast({
-          title: "Check-In Failed",
-          description: "Seal daily access was denied.",
+          title: "Check-In Submission Failed",
+          description: "Could not submit transaction to the network.",
           variant: "destructive",
         });
       }
@@ -736,7 +898,7 @@ export default function EmployeePage() {
       });
       return;
     }
-    if (!currentWalletAddress) {
+    if (!currentAccount?.address) {
       toast({
         title: "Wallet Not Connected",
         description: "Please connect your wallet address.",
@@ -745,16 +907,39 @@ export default function EmployeePage() {
       return;
     }
 
-    // --- BEGIN On-chain Check-in Verification (keeps its own try-catch as it's a preliminary gate) ---
+    const sealSessionReady = await initializeSealSession();
+    if (
+      !sealSessionReady ||
+      !sealClient ||
+      !sessionKey ||
+      sessionKey.isExpired()
+    ) {
+      toast({
+        title: "Seal Session Not Ready",
+        description:
+          "Your Seal session is not active or has expired. Please re-initialize.",
+        variant: "destructive",
+        action: (
+          <ToastAction altText="Re-initialize" onClick={initializeSealSession}>
+            Re-initialize
+          </ToastAction>
+        ),
+      });
+      if (sessionKey?.isExpired())
+        console.log("Checkout: Session key expired.");
+      return;
+    }
+
+    // On-chain check-in verification
     toast({
       title: "Verifying Check-in Status...",
-      description: "Please wait.",
+      description: "Checking current on-chain status before checkout.",
     });
     try {
       console.log(
         `Fetching EmployeeLastCheckInLog object: ${EMPLOYEE_LOG_ADDRESS}`
       );
-      const logObjectResponse = await suiClient.getObject({
+      const logObjectResponse = await suiClientFromHook.getObject({
         id: EMPLOYEE_LOG_ADDRESS,
         options: { showContent: true },
       });
@@ -785,11 +970,11 @@ export default function EmployeePage() {
       }
       const lastCheckInsTableId = logObjectFields.last_check_ins.fields.id.id;
       console.log(
-        `Querying table ID ${lastCheckInsTableId} for employee: ${currentWalletAddress}`
+        `Querying table ID ${lastCheckInsTableId} for employee: ${currentAccount.address}`
       );
-      const checkInRecordField = await suiClient.getDynamicFieldObject({
+      const checkInRecordField = await suiClientFromHook.getDynamicFieldObject({
         parentId: lastCheckInsTableId,
-        name: { type: "address", value: currentWalletAddress },
+        name: { type: "address", value: currentAccount.address },
       });
       if (
         checkInRecordField.error ||
@@ -798,7 +983,7 @@ export default function EmployeePage() {
       ) {
         console.log(
           "No active check-in record found for user:",
-          currentWalletAddress,
+          currentAccount.address,
           "Error:",
           checkInRecordField.error
         );
@@ -812,14 +997,14 @@ export default function EmployeePage() {
       const lastCheckInTimestamp = (checkInRecordField.data.content as any)
         .fields.value;
       console.log(
-        `Active check-in found. Timestamp: ${lastCheckInTimestamp}. Proceeding with checkout.`
+        `Active check-in found. Timestamp: ${lastCheckInTimestamp}. Proceeding with Seal verification for checkout.`
       );
-      toast({
-        title: "Check-in Verified",
-        description: "Proceeding with checkout process.",
-      });
+      // On-chain check-in verified, can proceed to Seal verification for checkout context
     } catch (e: any) {
-      console.error("Error during on-chain check-in verification:", e);
+      console.error(
+        "Error during on-chain check-in verification for checkout:",
+        e
+      );
       toast({
         title: "Verification Error",
         description: e.message || "Failed to verify check-in status.",
@@ -827,168 +1012,51 @@ export default function EmployeePage() {
       });
       return;
     }
-    // --- END On-chain Check-in Verification ---
 
     toast({
       title: "Processing Check-Out...",
-      description: "Please wait and approve transactions in your wallet.",
+      description: "Verifying Seal access for checkout context...",
     });
 
     try {
       const whitelistObjectId = selectedTimesheetForCheckin.id;
-      const employeeLogSharedObjectId = EMPLOYEE_LOG_ADDRESS;
-
-      const sealClient = new SealClient({
-        suiClient: suiClient as any,
-        serverObjectIds: KEY_SERVER_OBJECT_IDS_TESTNET.map((id) => [id, 1]),
-        verifyKeyServers: false,
-      });
-
-      let sessionKey: SessionKey | undefined;
-      const sessionKeyIdbKey = `seal-session-key-${currentWalletAddress}-${packageId}`;
-
-      // Attempt to load existing SessionKey (no separate try-catch)
-      const storedSessionData = await idbGet(sessionKeyIdbKey);
-
-      if (
-        storedSessionData &&
-        storedSessionData.exportedKey &&
-        storedSessionData.signature
-      ) {
-        console.log(
-          "Found existing session key data in IndexedDB, attempting to import..."
-        );
-        const importedSessionKey = await SessionKey.import(
-          storedSessionData.exportedKey,
-          new SuiGraphQLClient({
-            url: "https://sui-testnet.mystenlabs.com/graphql",
-          }) as any
-        );
-        if (!importedSessionKey.isExpired()) {
-          console.log(
-            "Imported session key is not expired. Re-applying signature..."
-          );
-          importedSessionKey.setPersonalMessageSignature(
-            storedSessionData.signature
-          );
-          sessionKey = importedSessionKey;
-          console.log(
-            "SessionKey imported and signature re-applied successfully."
-          );
-        } else {
-          console.log(
-            "Stored session key has expired or is invalid, creating a new one."
-          );
-          await idbDel(sessionKeyIdbKey);
-        }
-      }
-
-      if (!sessionKey) {
-        console.log("Creating new SessionKey for checkout.");
-        sessionKey = new SessionKey({
-          address: currentWalletAddress as string,
-          packageId: packageId,
-          ttlMin: 30,
-          client: suiClient as any,
-        });
-        const personalMessage = sessionKey.getPersonalMessage();
-        console.log(
-          "Please sign this message for Seal SessionKey activation (checkout):"
-        );
-        const { signature: signedPersonalMessage } =
-          await signPersonalMessageAsync({ message: personalMessage });
-        sessionKey.setPersonalMessageSignature(signedPersonalMessage);
-        console.log("New SessionKey initialized and signed for checkout.");
-
-        // Attempt to store new SessionKey AND its signature
-        await idbSet(sessionKeyIdbKey, {
-          exportedKey: sessionKey.export(),
-          signature: signedPersonalMessage,
-        });
-        console.log(
-          "New SessionKey and signature stored in IndexedDB (checkout)."
-        );
-      }
-
-      const employeePolicyId = createDailyEmployeeId(
-        `${currentWalletAddress}`,
-        whitelistObjectId
-      );
-      const dataToEncrypt = new Uint8Array([1]);
-
-      const { encryptedObject: dailyAccessCiphertext } =
-        await sealClient.encrypt({
-          threshold: ENCRYPTION_THRESHOLD,
-          packageId: packageId,
-          id: employeePolicyId,
-          data: dataToEncrypt,
-        });
-      console.log(
-        "Daily access token encrypted for policy verification during checkout."
-      );
-
-      if (!dailyAccessCiphertext)
-        throw new Error("Daily access ciphertext not available for checkout.");
-      if (!sessionKey)
-        throw new Error("SessionKey not initialized for checkout.");
-
-      const txbSealApprovalContext = new Transaction();
-      const sealApproveTarget =
-        `${packageId}::${MODULE_WHITELIST}::seal_approve` as `${string}::${string}::${string}`;
-      txbSealApprovalContext.moveCall({
-        target: sealApproveTarget,
-        arguments: [
-          txbSealApprovalContext.pure.vector("u8", fromHex(employeePolicyId)),
-          txbSealApprovalContext.object(whitelistObjectId),
-        ],
-      });
-      const sealApprovalTxBytes = await txbSealApprovalContext.build({
-        client: suiClient,
-        onlyTransactionKind: true,
-      });
-
-      console.log("Fetching keys for Seal approval (checkout context)...");
-      await sealClient.fetchKeys({
-        ids: [employeePolicyId],
-        txBytes: sealApprovalTxBytes,
+      // Use the new helper function for Seal verification in checkout context
+      const accessApproved = await performDailySealAccessVerification(
+        sealClient,
         sessionKey,
-        threshold: ENCRYPTION_THRESHOLD,
-      });
+        suiClientFromHook, // Pass the suiClient from the hook
+        packageId!,
+        currentAccount.address,
+        whitelistObjectId,
+        toast
+      );
 
-      console.log("Attempting Seal decryption for checkout context...");
-      const decryptedPayload = await sealClient.decrypt({
-        data: dailyAccessCiphertext,
-        sessionKey: sessionKey,
-        txBytes: sealApprovalTxBytes,
-      });
-
-      if (!(decryptedPayload && decryptedPayload[0] === 1)) {
+      if (!accessApproved) {
+        // If Seal access for checkout context is denied, we might still allow the on-chain checkout to proceed
+        // but warn the user that subsequent log processing might fail if Seal was intended as a gate.
+        // The current performDailySealAccessVerification shows a destructive toast and returns false.
+        // Depending on desired behavior, you might want a softer failure here or proceed with caution.
         console.warn(
-          "Seal daily access verification FAILED for checkout. Whitelist check in Move contract might fail."
+          "Seal daily access for checkout context was not approved. Proceeding with on-chain checkout anyway."
         );
         toast({
-          title: "Seal Verification Note",
+          title: "Seal Context Note",
           description:
-            "Seal access verification for checkout context did not pass. Proceeding, but contract checks might fail.",
-          variant: null,
+            "Seal access for checkout context failed. On-chain checkout will proceed.",
+          variant: "destructive",
         });
-      } else {
-        console.log(
-          "Seal daily access verification successful for checkout context."
-        );
-        toast({
-          title: "Seal Access Approved",
-          description: "Proceeding with check-out transaction.",
-        });
+        // For now, if it fails, let's be consistent and stop, as the original code implied it was a necessary step.
+        return;
       }
 
+      // If access approved, proceed with the actual check-out transaction
       const txbCheckOut = new Transaction();
       const checkOutTarget =
         `${packageId}::${MODULE_EMPLOYEE_LOG}::check_out` as `${string}::${string}::${string}`;
       txbCheckOut.moveCall({
         target: checkOutTarget,
         arguments: [
-          txbCheckOut.object(employeeLogSharedObjectId),
+          txbCheckOut.object(EMPLOYEE_LOG_ADDRESS),
           txbCheckOut.object(whitelistObjectId),
           txbCheckOut.object(CLOCK_OBJECT_ID),
         ],
@@ -1011,13 +1079,14 @@ export default function EmployeePage() {
             10
           )}... Waiting for finality...`,
         });
-        await suiClient.waitForTransaction({
+        await suiClientFromHook.waitForTransaction({
           digest: checkOutSubmissionResult.digest,
         });
-        const fullCheckOutResponse = await suiClient.getTransactionBlock({
-          digest: checkOutSubmissionResult.digest,
-          options: { showEffects: true, showEvents: true },
-        });
+        const fullCheckOutResponse =
+          await suiClientFromHook.getTransactionBlock({
+            digest: checkOutSubmissionResult.digest,
+            options: { showEffects: true, showEvents: true },
+          });
 
         if (fullCheckOutResponse.effects?.status.status === "success") {
           console.log("Checkout successful on-chain!");
@@ -1040,7 +1109,7 @@ export default function EmployeePage() {
               (e: any) =>
                 e.type.endsWith("::events::EmployeeCheckOutEvent") &&
                 e.parsedJson &&
-                (e.parsedJson as any).employee === currentWalletAddress
+                (e.parsedJson as any).employee === currentAccount.address
             );
 
           if (userCheckOutEventFromFullResponse) {
@@ -1055,7 +1124,7 @@ export default function EmployeePage() {
               "No specific check-out event found in full transaction events, querying..."
             );
             try {
-              const eventsResult = await suiClient.queryEvents({
+              const eventsResult = await suiClientFromHook.queryEvents({
                 query: {
                   MoveEventType: `${packageId}::events::EmployeeCheckOutEvent`,
                 },
@@ -1065,7 +1134,7 @@ export default function EmployeePage() {
               const userQueriedCheckOutEvent = eventsResult.data.find(
                 (event) =>
                   event.parsedJson &&
-                  (event.parsedJson as any).employee === currentWalletAddress
+                  (event.parsedJson as any).employee === currentAccount.address
               );
               if (userQueriedCheckOutEvent) {
                 eventDataForWalrus = userQueriedCheckOutEvent.parsedJson as any;
@@ -1109,7 +1178,7 @@ export default function EmployeePage() {
                 throw new Error(
                   "Package ID not available for work log processing."
                 );
-              if (!currentWalletAddress)
+              if (!currentAccount?.address)
                 throw new Error("Current wallet address is not available.");
 
               const {
@@ -1133,7 +1202,7 @@ export default function EmployeePage() {
                 sealLogId: submittedSealLogId,
                 timesheetId: selectedTimesheetForCheckin.id,
                 timesheetCapId: selectedTimesheetForCheckin.capId,
-                employeeAddress: currentWalletAddress,
+                employeeAddress: currentAccount.address,
                 originalWorkLogData: originalWorkLogData,
                 timestamp: Date.now(),
                 // No status here, admin side will manage its own list's status if needed
@@ -1159,7 +1228,9 @@ export default function EmployeePage() {
               }
 
               // Save to employee's own IndexedDB as a backup/personal record
-              const localMarkersKey = `my-submitted-log-markers-${currentWalletAddress}-${Date.now()}`; // Different key for employee's own records
+              const localMarkersKey = `my-submitted-log-markers-${
+                currentAccount.address
+              }-${Date.now()}`; // Different key for employee's own records
               const existingLocalMarkers =
                 (await idbGet(localMarkersKey)) || [];
               existingLocalMarkers.push({
@@ -1255,7 +1326,7 @@ export default function EmployeePage() {
     amount: string,
     period: string
   ) => {
-    if (!currentWalletAddress) {
+    if (!currentAccount?.address) {
       toast({ title: "Wallet not connected", variant: "destructive" });
       return;
     }
@@ -1272,7 +1343,7 @@ export default function EmployeePage() {
       console.log("TODO: Call Sui claimSalary function here with context:", {
         timesheetId: selectedTimesheetForCheckin.id,
         capId: selectedTimesheetForCheckin.capId,
-        employeeAddress: currentWalletAddress,
+        employeeAddress: currentAccount.address,
         amount,
         period,
       });
@@ -1290,7 +1361,7 @@ export default function EmployeePage() {
       queryClient.invalidateQueries({
         queryKey: [
           "/api/salary-records",
-          { employeeAddress: currentWalletAddress },
+          { employeeAddress: currentAccount.address },
         ],
       });
 
@@ -1353,9 +1424,85 @@ export default function EmployeePage() {
     amount: selectedTimesheetForCheckin ? "0.125" : "0.00",
     usdValue: selectedTimesheetForCheckin ? "$312.50" : "$0.00",
     hoursWorked: selectedTimesheetForCheckin
-      ? workRecords.filter((r) => r.status === "completed").length * 8.5
+      ? onChainWorkRecords
+          .filter(
+            (r: DisplayableWorkRecord) =>
+              r.status === "Completed (on-chain)" && r.durationDisplay
+          )
+          .reduce((acc: number, r: DisplayableWorkRecord) => {
+            const match = r.durationDisplay!.match(/(\d+)h (\d+)m/);
+            if (match) {
+              return (
+                acc + (parseInt(match[1], 10) * 60 + parseInt(match[2], 10))
+              );
+            }
+            return acc;
+          }, 0) / 60 // Convert total minutes to hours, round to 2 decimal places
       : 0,
     hourlyRate: selectedTimesheetForCheckin ? "0.003" : "N/A",
+  };
+
+  const SealStatus = () => {
+    if (isSealSessionInitializing) {
+      return (
+        <div className="flex items-center space-x-2 text-sm text-yellow-600 dark:text-yellow-400">
+          <Clock className="h-4 w-4 animate-spin" />
+          <span>Initializing Seal session...</span>
+        </div>
+      );
+    }
+    if (sealSessionError) {
+      return (
+        <div className="flex items-center justify-between">
+          <div className="flex items-center space-x-2 text-sm text-red-600 dark:text-red-400">
+            <AlertTriangle className="h-4 w-4" />
+            <span>
+              Seal session error: {sealSessionError.substring(0, 50)}...
+            </span>
+          </div>
+          <Button variant="outline" size="sm" onClick={initializeSealSession}>
+            Retry
+          </Button>
+        </div>
+      );
+    }
+    if (sealClient && sessionKey) {
+      if (sessionKey.isExpired()) {
+        return (
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-2 text-sm text-orange-500 dark:text-orange-400">
+              <AlertTriangle className="h-4 w-4" />
+              <span>Seal session expired.</span>
+            </div>
+            <Button variant="outline" size="sm" onClick={initializeSealSession}>
+              Refresh
+            </Button>
+          </div>
+        );
+      }
+      return (
+        <div className="flex items-center space-x-2 text-sm text-green-600 dark:text-green-400">
+          <CheckCircle className="h-4 w-4" />
+          <span>Seal session ready.</span>
+        </div>
+      );
+    }
+    return (
+      <div className="flex items-center justify-between">
+        <div className="flex items-center space-x-2 text-sm text-gray-500 dark:text-gray-400">
+          <HelpCircle className="h-4 w-4" />
+          <span>Seal session not initialized.</span>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={initializeSealSession}
+          disabled={isSealSessionInitializing}
+        >
+          Initialize
+        </Button>
+      </div>
+    );
   };
 
   return (
@@ -1367,13 +1514,21 @@ export default function EmployeePage() {
         <p className="text-gray-600 dark:text-gray-300">
           Track your work hours and manage salary
         </p>
-        {currentWalletAddress && (
+        {currentAccount?.address && (
           <p className="text-sm text-gray-500 dark:text-gray-400 font-mono mt-1">
-            Connected: {currentWalletAddress.substring(0, 10)}...
-            {currentWalletAddress.substring(currentWalletAddress.length - 4)}
+            Connected: {currentAccount.address.substring(0, 10)}...
+            {currentAccount.address.substring(
+              currentAccount.address.length - 4
+            )}
           </p>
         )}
       </div>
+
+      <Card className="mb-6">
+        <CardContent className="pt-6">
+          <SealStatus />
+        </CardContent>
+      </Card>
 
       {markerDataForAdminDisplay && (
         <Card className="mb-6 bg-blue-50 border border-blue-200">
@@ -1430,7 +1585,7 @@ export default function EmployeePage() {
       <TimesheetSelector
         availableTimesheets={availableTimesheets}
         employeeSpecificTimesheets={employeeSpecificTimesheets}
-        currentWalletAddress={currentWalletAddress}
+        currentWalletAddress={currentAccount?.address || null}
         selectedTimesheetForCheckin={selectedTimesheetForCheckin}
         onTimesheetSelection={handleTimesheetSelection}
       />
