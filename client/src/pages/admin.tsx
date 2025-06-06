@@ -277,7 +277,7 @@ export default function AdminPage() {
       setIsCreatingTimesheet(true);
       const txb = new Transaction();
       txb.moveCall({
-        target: `${packageId}::whitelist::create_allowlist_entry`,
+        target: `${packageId}::whitelist::create_and_add_sender`,
         arguments: [txb.pure.string(formData.name)],
       });
       return signAndExecuteTransactionMutation({
@@ -405,9 +405,7 @@ export default function AdminPage() {
           originalWorkLogData: item.originalWorkLogData,
           timestamp: item.timestamp || Date.now(),
           status: item.status || "pendingAdminAttachment",
-          id:
-            item.id ||
-            `${item.timesheetId}-${item.blobId}-${Date.now()}-${index}`,
+          id: item.id || `${item.timesheetId}-${item.blobId}`,
         })
       );
 

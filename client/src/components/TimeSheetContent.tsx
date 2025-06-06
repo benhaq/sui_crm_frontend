@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useParams, useLocation } from "wouter";
 import {
   useSuiClient,
@@ -21,6 +21,7 @@ import {
   Image as ImageIcon,
   AlertCircle,
   ClipboardPaste,
+  User,
 } from "lucide-react";
 import {
   SealClient,
@@ -36,6 +37,12 @@ import { WALRUS_SERVICES } from "@/services/walrusService";
 import { fromHex, toHex } from "@mysten/bcs";
 import { Textarea } from "@/components/ui/textarea";
 import { constructMoveCall } from "@/lib/suiUtils";
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from "@/components/ui/accordion";
 
 // Types
 interface TimesheetInfo {
@@ -591,6 +598,58 @@ export default function TimeSheetContent() {
     }
   };
 
+  // Group logs by employee address for rendering
+  const groupedLogs = useMemo(() => {
+    const allLogs: Array<{
+      blobId: string;
+      sealLogId?: string;
+      employeeAddress: string;
+    }> = [];
+
+    // Add processed markers, which have an employee address
+    processedMarkers.forEach((marker) => {
+      allLogs.push({
+        blobId: marker.blobId,
+        sealLogId: marker.sealLogId,
+        employeeAddress: marker.employeeAddress || "Unidentified",
+      });
+    });
+
+    // Add on-chain blobs that aren't already in the processed list
+    // These will be grouped under "Unidentified" until decrypted
+    const processedBlobIds = new Set(processedMarkers.map((m) => m.blobId));
+    onChainBlobIds.forEach((blobId) => {
+      if (!processedBlobIds.has(blobId)) {
+        allLogs.push({
+          blobId: blobId,
+          employeeAddress: "Unidentified On-Chain Logs",
+        });
+      }
+    });
+
+    // Group all logs by employee address
+    return allLogs.reduce(
+      (
+        acc,
+        log
+      ): Record<
+        string,
+        Array<{ blobId: string; sealLogId?: string; employeeAddress: string }>
+      > => {
+        const key = log.employeeAddress;
+        if (!acc[key]) {
+          acc[key] = [];
+        }
+        acc[key].push(log);
+        return acc;
+      },
+      {} as Record<
+        string,
+        Array<{ blobId: string; sealLogId?: string; employeeAddress: string }>
+      >
+    );
+  }, [processedMarkers, onChainBlobIds]);
+
   if (!timesheetId) {
     return (
       <div className="container mx-auto px-6 py-8">
@@ -638,45 +697,68 @@ export default function TimeSheetContent() {
               <span>Loading timesheet info...</span>
             </div>
           ) : timesheetInfo ? (
-            <div className="space-y-3">
-              <div>
-                <label className="text-sm font-medium text-muted-foreground">
-                  Name:
-                </label>
-                <p className="text-lg font-semibold">{timesheetInfo.name}</p>
-              </div>
-              <div>
-                <label className="text-sm font-medium text-muted-foreground">
-                  ID:
-                </label>
-                <p className="font-mono text-sm">{timesheetInfo.id}</p>
-              </div>
-              <div>
-                <label className="text-sm font-medium text-muted-foreground">
-                  Employee Count:
-                </label>
-                <p>{timesheetInfo.list.length} employee(s)</p>
-              </div>
-              {timesheetInfo.list.length > 0 && (
-                <div>
-                  <label className="text-sm font-medium text-muted-foreground">
-                    Employees:
-                  </label>
-                  <div className="flex flex-wrap gap-2 mt-1">
-                    {timesheetInfo.list.map((address, index) => (
-                      <Badge
-                        key={index}
-                        variant="secondary"
-                        className="font-mono text-xs"
-                      >
-                        {address.substring(0, 8)}...
-                        {address.substring(address.length - 6)}
-                      </Badge>
-                    ))}
+            (() => {
+              // Logic to separate admin from employees
+              const adminAddress = currentAccount?.address;
+              const isAdminInList =
+                adminAddress && timesheetInfo.list.includes(adminAddress);
+              const employeeList = adminAddress
+                ? timesheetInfo.list.filter((addr) => addr !== adminAddress)
+                : timesheetInfo.list;
+
+              return (
+                <div className="space-y-3">
+                  <div>
+                    <label className="text-sm font-medium text-muted-foreground">
+                      Name:
+                    </label>
+                    <p className="text-lg font-semibold">
+                      {timesheetInfo.name}
+                    </p>
                   </div>
+                  <div>
+                    <label className="text-sm font-medium text-muted-foreground">
+                      ID:
+                    </label>
+                    <p className="font-mono text-sm">{timesheetInfo.id}</p>
+                  </div>
+                  <div>
+                    <label className="text-sm font-medium text-muted-foreground">
+                      Employee Count:
+                    </label>
+                    <p>{employeeList.length} employee(s)</p>
+                  </div>
+                  {(isAdminInList || employeeList.length > 0) && (
+                    <div>
+                      <label className="text-sm font-medium text-muted-foreground">
+                        Participants:
+                      </label>
+                      <div className="flex flex-wrap gap-2 mt-1">
+                        {isAdminInList && (
+                          <Badge
+                            variant="default"
+                            className="font-mono text-xs bg-blue-600 hover:bg-blue-700 text-white"
+                          >
+                            Admin: {adminAddress.substring(0, 8)}...
+                            {adminAddress.substring(adminAddress.length - 6)}
+                          </Badge>
+                        )}
+                        {employeeList.map((address, index) => (
+                          <Badge
+                            key={index}
+                            variant="secondary"
+                            className="font-mono text-xs"
+                          >
+                            {address.substring(0, 8)}...
+                            {address.substring(address.length - 6)}
+                          </Badge>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
+              );
+            })()
           ) : (
             <p className="text-muted-foreground">
               Failed to load timesheet information.
@@ -805,294 +887,151 @@ export default function TimeSheetContent() {
               employee markers above.
             </p>
           ) : (
-            <div className="space-y-4">
-              {/* Show processed markers first (they have seal log IDs) */}
-              {processedMarkers.map((marker) => (
-                <div
-                  key={marker.blobId}
-                  className="border rounded-lg p-4 bg-card/50 border-green-500/30"
-                >
-                  <div className="flex justify-between items-start mb-3">
-                    <div className="flex-1">
-                      <p className="font-semibold flex items-center space-x-2">
-                        <Download className="h-4 w-4" />
-                        <span>Blob ID (with Seal Key):</span>
-                      </p>
-                      <p className="font-mono text-xs text-muted-foreground break-all">
-                        {marker.blobId}
-                      </p>
-                      <p className="text-xs text-green-600 mt-1">
-                        ✓ Has Seal Log ID for decryption
-                      </p>
-                      {marker.employeeAddress && (
-                        <p className="text-xs text-muted-foreground">
-                          Employee: {marker.employeeAddress}
-                        </p>
-                      )}
-                      {decryptionResults[marker.blobId]?.downloadTime && (
-                        <p className="text-xs text-muted-foreground mt-1">
-                          Download:{" "}
-                          {decryptionResults[marker.blobId].downloadTime}ms |
-                          Decrypt:{" "}
-                          {decryptionResults[marker.blobId].decryptTime}ms
-                        </p>
-                      )}
+            <Accordion type="multiple" className="w-full">
+              {Object.entries(groupedLogs).map(([employeeAddress, logs]) => (
+                <AccordionItem key={employeeAddress} value={employeeAddress}>
+                  <AccordionTrigger>
+                    <div className="flex items-center space-x-2">
+                      <User className="h-4 w-4" />
+                      <span className="font-mono text-sm">
+                        {employeeAddress}
+                      </span>
+                      <Badge variant="outline">{logs.length} log(s)</Badge>
                     </div>
-                    <Button
-                      size="sm"
-                      onClick={() =>
-                        handleDecryptWorkLog(marker.blobId, marker.sealLogId)
-                      }
-                      disabled={
-                        isDecrypting === marker.blobId ||
-                        !sealClientForAdmin ||
-                        !sessionKeyForAdmin ||
-                        sessionKeyForAdmin.isExpired()
-                      }
-                      className="ml-4"
-                    >
-                      {isDecrypting === marker.blobId ? (
-                        <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                      ) : (
-                        <Key className="h-4 w-4 mr-2" />
-                      )}
-                      {isDecrypting === marker.blobId
-                        ? "Decrypting..."
-                        : decryptionResults[marker.blobId]?.url ||
-                          decryptionResults[marker.blobId]?.data
-                        ? "View Again"
-                        : "Decrypt & View"}
-                    </Button>
-                  </div>
+                  </AccordionTrigger>
+                  <AccordionContent>
+                    <div className="space-y-4 pt-2 pl-6">
+                      {logs.map((log) => (
+                        <div
+                          key={log.blobId}
+                          className="border-l-2 pl-4 border-dashed"
+                        >
+                          <div className="flex justify-between items-start mb-3">
+                            <div className="flex-1 overflow-hidden">
+                              <p className="font-semibold flex items-center space-x-2">
+                                <Download className="h-4 w-4" />
+                                <span>Blob ID:</span>
+                              </p>
+                              <p className="font-mono text-xs text-muted-foreground break-all">
+                                {log.blobId}
+                              </p>
+                              {log.sealLogId && (
+                                <p className="text-xs text-green-600 mt-1">
+                                  ✓ Has Seal Log ID for decryption
+                                </p>
+                              )}
+                              {decryptionResults[log.blobId]?.downloadTime && (
+                                <p className="text-xs text-muted-foreground mt-1">
+                                  Download:{" "}
+                                  {decryptionResults[log.blobId].downloadTime}
+                                  ms | Decrypt:{" "}
+                                  {decryptionResults[log.blobId].decryptTime}ms
+                                </p>
+                              )}
+                            </div>
+                            <Button
+                              size="sm"
+                              onClick={() =>
+                                handleDecryptWorkLog(log.blobId, log.sealLogId)
+                              }
+                              disabled={
+                                isDecrypting === log.blobId ||
+                                !sealClientForAdmin ||
+                                !sessionKeyForAdmin ||
+                                sessionKeyForAdmin.isExpired()
+                              }
+                              className="ml-4 flex-shrink-0"
+                            >
+                              {isDecrypting === log.blobId ? (
+                                <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                              ) : (
+                                <Key className="h-4 w-4 mr-2" />
+                              )}
+                              {isDecrypting === log.blobId
+                                ? "Decrypting..."
+                                : decryptionResults[log.blobId]?.url ||
+                                  decryptionResults[log.blobId]?.data
+                                ? "View Again"
+                                : "Decrypt & View"}
+                            </Button>
+                          </div>
 
-                  {/* Display decrypted content (same as before) */}
-                  {decryptionResults[marker.blobId]?.url &&
-                    decryptionResults[marker.blobId]?.type === "image" && (
-                      <div className="mt-3">
-                        <div className="flex items-center space-x-2 mb-2">
-                          <ImageIcon className="h-4 w-4" />
-                          <p className="text-sm font-medium">
-                            Decrypted Image:
-                          </p>
-                        </div>
-                        <img
-                          src={decryptionResults[marker.blobId]?.url}
-                          alt={`Decrypted content for ${marker.blobId}`}
-                          className="rounded-md border max-w-xs max-h-64 object-contain"
-                        />
-                      </div>
-                    )}
-
-                  {decryptionResults[marker.blobId]?.data &&
-                    decryptionResults[marker.blobId]?.type === "json" && (
-                      <div className="mt-3">
-                        <div className="flex items-center space-x-2 mb-2">
-                          <FileText className="h-4 w-4" />
-                          <p className="text-sm font-medium">
-                            Decrypted Data (JSON):
-                          </p>
-                        </div>
-                        <pre className="text-xs bg-muted p-3 rounded-md overflow-auto max-h-64">
-                          {JSON.stringify(
-                            decryptionResults[marker.blobId]?.data,
-                            null,
-                            2
+                          {/* Display links/decrypted data */}
+                          {employeeAddress === "Unidentified On-Chain Logs" && (
+                            <div className="mt-2 text-xs text-muted-foreground">
+                              <p>If download fails, verify the blob exists:</p>
+                              <div className="space-y-1 mt-1">
+                                <a
+                                  href={`https://aggregator.walrus-testnet.walrus.space/v1/blobs/${log.blobId}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-blue-500 hover:underline block"
+                                >
+                                  → Check on Aggregator (direct)
+                                </a>
+                                <a
+                                  href={`https://aggregator.walrus-testnet.walrus.space/v1/blobs/${encodeURIComponent(
+                                    log.blobId
+                                  )}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-blue-500 hover:underline block"
+                                >
+                                  → Check on Aggregator (URL encoded)
+                                </a>
+                              </div>
+                            </div>
                           )}
-                        </pre>
-                      </div>
-                    )}
 
-                  {decryptionResults[marker.blobId]?.rawDecrypted &&
-                    !(
-                      decryptionResults[marker.blobId]?.data ||
-                      decryptionResults[marker.blobId]?.url
-                    ) &&
-                    decryptionResults[marker.blobId]?.type === "binary" && (
-                      <div className="mt-3">
-                        <div className="flex items-center space-x-2 mb-2">
-                          <FileText className="h-4 w-4" />
-                          <p className="text-sm font-medium">
-                            Decrypted Data (Binary - first 100 bytes as hex):
-                          </p>
-                        </div>
-                        <pre className="text-xs bg-muted p-3 rounded-md overflow-auto max-h-32">
-                          {toHex(
-                            decryptionResults[
-                              marker.blobId
-                            ]?.rawDecrypted!.slice(0, 100)
+                          {decryptionResults[log.blobId]?.url &&
+                            decryptionResults[log.blobId]?.type === "image" && (
+                              <div className="mt-3">
+                                <div className="flex items-center space-x-2 mb-2">
+                                  <ImageIcon className="h-4 w-4" />
+                                  <p className="text-sm font-medium">
+                                    Decrypted Image:
+                                  </p>
+                                </div>
+                                <img
+                                  src={decryptionResults[log.blobId]?.url}
+                                  alt={`Decrypted content for ${log.blobId}`}
+                                  className="rounded-md border max-w-xs max-h-64 object-contain"
+                                />
+                              </div>
+                            )}
+                          {decryptionResults[log.blobId]?.data &&
+                            decryptionResults[log.blobId]?.type === "json" && (
+                              <div className="mt-3">
+                                <div className="flex items-center space-x-2 mb-2">
+                                  <FileText className="h-4 w-4" />
+                                  <p className="text-sm font-medium">
+                                    Decrypted Data (JSON):
+                                  </p>
+                                </div>
+                                <pre className="text-xs bg-muted p-3 rounded-md overflow-auto max-h-64">
+                                  {JSON.stringify(
+                                    decryptionResults[log.blobId]?.data,
+                                    null,
+                                    2
+                                  )}
+                                </pre>
+                              </div>
+                            )}
+                          {decryptionResults[log.blobId]?.error && (
+                            <div className="mt-3 flex items-center space-x-2 text-destructive">
+                              <AlertCircle className="h-4 w-4" />
+                              <p className="text-sm">
+                                Error: {decryptionResults[log.blobId]?.error}
+                              </p>
+                            </div>
                           )}
-                        </pre>
-                      </div>
-                    )}
-
-                  {decryptionResults[marker.blobId]?.error && (
-                    <div className="mt-3 flex items-center space-x-2 text-destructive">
-                      <AlertCircle className="h-4 w-4" />
-                      <p className="text-sm">
-                        Error: {decryptionResults[marker.blobId]?.error}
-                      </p>
+                        </div>
+                      ))}
                     </div>
-                  )}
-                </div>
+                  </AccordionContent>
+                </AccordionItem>
               ))}
-
-              {/* Show on-chain blob IDs that aren't in processed markers */}
-              {onChainBlobIds
-                .filter(
-                  (blobId) => !processedMarkers.find((m) => m.blobId === blobId)
-                )
-                .map((blobId) => (
-                  <div
-                    key={blobId}
-                    className="border rounded-lg p-4 bg-card/50"
-                  >
-                    <div className="flex justify-between items-start mb-3">
-                      <div className="flex-1">
-                        <p className="font-semibold flex items-center space-x-2">
-                          <Download className="h-4 w-4" />
-                          <span>Blob ID:</span>
-                        </p>
-                        <p className="font-mono text-xs text-muted-foreground break-all">
-                          {blobId}
-                        </p>
-                        {decryptionResults[blobId]?.downloadTime && (
-                          <p className="text-xs text-muted-foreground mt-1">
-                            Download: {decryptionResults[blobId].downloadTime}ms
-                            | Decrypt: {decryptionResults[blobId].decryptTime}ms
-                          </p>
-                        )}
-                      </div>
-                      <Button
-                        size="sm"
-                        onClick={() => handleDecryptWorkLog(blobId)}
-                        disabled={
-                          isDecrypting === blobId ||
-                          !sealClientForAdmin ||
-                          !sessionKeyForAdmin ||
-                          sessionKeyForAdmin.isExpired()
-                        }
-                        className="ml-4"
-                      >
-                        {isDecrypting === blobId ? (
-                          <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                        ) : (
-                          <Key className="h-4 w-4 mr-2" />
-                        )}
-                        {isDecrypting === blobId
-                          ? "Decrypting..."
-                          : decryptionResults[blobId]?.url ||
-                            decryptionResults[blobId]?.data
-                          ? "View Again"
-                          : "Decrypt & View"}
-                      </Button>
-                    </div>
-
-                    {/* Manual verification link */}
-                    <div className="mt-2 text-xs text-muted-foreground">
-                      <p>
-                        If download fails with 404, try these links to verify
-                        the blob exists:
-                      </p>
-                      <div className="space-y-1 mt-1">
-                        <a
-                          href={`https://aggregator.walrus-testnet.walrus.space/v1/blobs/${blobId}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-blue-500 hover:underline block"
-                        >
-                          → Check on Aggregator (direct)
-                        </a>
-                        <a
-                          href={`https://aggregator.walrus-testnet.walrus.space/v1/blobs/${encodeURIComponent(
-                            blobId
-                          )}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-blue-500 hover:underline block"
-                        >
-                          → Check on Aggregator (URL encoded)
-                        </a>
-                      </div>
-                      <p className="mt-1">
-                        Raw blob ID:{" "}
-                        <code className="text-xs bg-muted px-1 py-0.5 rounded">
-                          {blobId}
-                        </code>
-                      </p>
-                    </div>
-
-                    {/* Display decrypted content */}
-                    {decryptionResults[blobId]?.url &&
-                      decryptionResults[blobId]?.type === "image" && (
-                        <div className="mt-3">
-                          <div className="flex items-center space-x-2 mb-2">
-                            <ImageIcon className="h-4 w-4" />
-                            <p className="text-sm font-medium">
-                              Decrypted Image:
-                            </p>
-                          </div>
-                          <img
-                            src={decryptionResults[blobId]?.url}
-                            alt={`Decrypted content for ${blobId}`}
-                            className="rounded-md border max-w-xs max-h-64 object-contain"
-                          />
-                        </div>
-                      )}
-
-                    {decryptionResults[blobId]?.data &&
-                      decryptionResults[blobId]?.type === "json" && (
-                        <div className="mt-3">
-                          <div className="flex items-center space-x-2 mb-2">
-                            <FileText className="h-4 w-4" />
-                            <p className="text-sm font-medium">
-                              Decrypted Data (JSON):
-                            </p>
-                          </div>
-                          <pre className="text-xs bg-muted p-3 rounded-md overflow-auto max-h-64">
-                            {JSON.stringify(
-                              decryptionResults[blobId]?.data,
-                              null,
-                              2
-                            )}
-                          </pre>
-                        </div>
-                      )}
-
-                    {decryptionResults[blobId]?.rawDecrypted &&
-                      !(
-                        decryptionResults[blobId]?.data ||
-                        decryptionResults[blobId]?.url
-                      ) &&
-                      decryptionResults[blobId]?.type === "binary" && (
-                        <div className="mt-3">
-                          <div className="flex items-center space-x-2 mb-2">
-                            <FileText className="h-4 w-4" />
-                            <p className="text-sm font-medium">
-                              Decrypted Data (Binary - first 100 bytes as hex):
-                            </p>
-                          </div>
-                          <pre className="text-xs bg-muted p-3 rounded-md overflow-auto max-h-32">
-                            {toHex(
-                              decryptionResults[blobId]?.rawDecrypted!.slice(
-                                0,
-                                100
-                              )
-                            )}
-                          </pre>
-                        </div>
-                      )}
-
-                    {decryptionResults[blobId]?.error && (
-                      <div className="mt-3 flex items-center space-x-2 text-destructive">
-                        <AlertCircle className="h-4 w-4" />
-                        <p className="text-sm">
-                          Error: {decryptionResults[blobId]?.error}
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                ))}
-            </div>
+            </Accordion>
           )}
         </CardContent>
       </Card>

@@ -2,6 +2,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Loader2, Clock, Plus, Eye, ListChecks } from "lucide-react";
+import { useCurrentAccount } from "@mysten/dapp-kit";
 
 interface SuiTimesheetItem {
   // Renamed to avoid conflict
@@ -24,6 +25,8 @@ export function ActiveTimesheetsList({
   onAddEmployee,
   onViewWorkLog,
 }: ActiveTimesheetsListProps) {
+  const { address: adminAddress } = useCurrentAccount() || {};
+
   if (isLoading) {
     return (
       <Card>
@@ -62,57 +65,63 @@ export function ActiveTimesheetsList({
         <CardTitle>Active Timesheets (from Sui)</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
-        {timesheets.map((timesheet) => (
-          <div
-            key={timesheet.id}
-            className="border rounded-lg p-4 hover:shadow-lg transition-shadow cursor-pointer bg-card/80 dark:bg-gray-800/50"
-            onClick={() => onViewWorkLog(timesheet.id)}
-          >
-            <div className="flex items-center justify-between">
-              <div className="flex items-center space-x-3">
-                <Button
-                  variant="outline"
-                  size="icon"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onAddEmployee(timesheet.id, timesheet.capId);
-                  }}
-                  className="h-8 w-8 p-0 flex-shrink-0"
-                  title="Add Employee to Timesheet"
-                >
-                  <Plus className="h-4 w-4" />
-                </Button>
-                <div className="flex-grow">
-                  <h4 className="font-semibold text-lg text-gray-800 dark:text-gray-100">
-                    {timesheet.name}
-                  </h4>
-                  <p
-                    className="text-xs text-blue-600 dark:text-blue-400 font-mono truncate"
-                    title={timesheet.id}
+        {timesheets.map((timesheet) => {
+          const employeeCount = adminAddress
+            ? timesheet.list.filter((addr) => addr !== adminAddress).length
+            : timesheet.list.length;
+
+          return (
+            <div
+              key={timesheet.id}
+              className="border rounded-lg p-4 hover:shadow-lg transition-shadow cursor-pointer bg-card/80 dark:bg-gray-800/50"
+              onClick={() => onViewWorkLog(timesheet.id)}
+            >
+              <div className="flex items-center justify-between">
+                <div className="flex items-center space-x-3">
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onAddEmployee(timesheet.id, timesheet.capId);
+                    }}
+                    className="h-8 w-8 p-0 flex-shrink-0"
+                    title="Add Employee to Timesheet"
                   >
-                    ID: {timesheet.id.substring(0, 10)}...
-                    {timesheet.id.substring(timesheet.id.length - 4)}
-                  </p>
-                  <p
-                    className="text-xs text-purple-600 dark:text-purple-400 font-mono truncate"
-                    title={timesheet.capId}
-                  >
-                    CapID: {timesheet.capId.substring(0, 10)}...
-                    {timesheet.capId.substring(timesheet.capId.length - 4)}
-                  </p>
+                    <Plus className="h-4 w-4" />
+                  </Button>
+                  <div className="flex-grow">
+                    <h4 className="font-semibold text-lg text-gray-800 dark:text-gray-100">
+                      {timesheet.name}
+                    </h4>
+                    <p
+                      className="text-xs text-blue-600 dark:text-blue-400 font-mono truncate"
+                      title={timesheet.id}
+                    >
+                      ID: {timesheet.id.substring(0, 10)}...
+                      {timesheet.id.substring(timesheet.id.length - 4)}
+                    </p>
+                    <p
+                      className="text-xs text-purple-600 dark:text-purple-400 font-mono truncate"
+                      title={timesheet.capId}
+                    >
+                      CapID: {timesheet.capId.substring(0, 10)}...
+                      {timesheet.capId.substring(timesheet.capId.length - 4)}
+                    </p>
+                  </div>
                 </div>
-              </div>
-              <div className="flex items-center space-x-4">
-                <div className="flex items-center text-sm text-muted-foreground">
-                  <ListChecks className="h-4 w-4 mr-1.5 text-green-500" />
-                  <span>{timesheet.list.length} Employee(s)</span>
+                <div className="flex items-center space-x-4">
+                  <div className="flex items-center text-sm text-muted-foreground">
+                    <ListChecks className="h-4 w-4 mr-1.5 text-green-500" />
+                    <span>{employeeCount} Employee(s)</span>
+                  </div>
+                  <Badge variant="secondary">On-Chain</Badge>
+                  <Eye className="h-4 w-4 text-muted-foreground hover:text-primary" />
                 </div>
-                <Badge variant="secondary">On-Chain</Badge>
-                <Eye className="h-4 w-4 text-muted-foreground hover:text-primary" />
               </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </CardContent>
     </Card>
   );
